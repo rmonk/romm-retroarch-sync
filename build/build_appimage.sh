@@ -9,8 +9,7 @@ PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
 echo "📁 Project root: $PROJECT_ROOT"
 
-# Add version variable at the top
-VERSION="1.6"
+VERSION="${VERSION:-1.6}"
 APPIMAGE_NAME="RomM-RetroArch-Sync-v${VERSION}.AppImage"
 
 # Define paths
