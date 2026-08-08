@@ -117,18 +117,26 @@ class GameDataCache:
         self.platform_mapping = self.load_platform_mapping()
         self.filename_mapping = self.load_filename_mapping()
         self.original_total = 0  # Initialize BEFORE load_games_cache (will be set by load)
+        self.last_sync_datetime = None
         self.cached_games = self.load_games_cache()  # This sets original_total from cache
     
-    def save_games_data(self, games_data, original_total=None):
+    def save_games_data(self, games_data, original_total=None, last_sync_datetime=None):
         """Non-blocking cache save with memory optimization
 
         Args:
             games_data: List of game dictionaries (after grouping)
             original_total: Optional original ungrouped ROM count from server
+            last_sync_datetime: Optional ISO 8601 string timestamp of the sync
         """
         import threading
         import time
-        import gc  # Add this import
+        import gc
+        import datetime
+
+        if not last_sync_datetime:
+            last_sync_datetime = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+
+        self.last_sync_datetime = last_sync_datetime
 
         def save_in_background():
             try:
@@ -157,6 +165,7 @@ class GameDataCache:
                 
                 cache_data = {
                     'timestamp': time.time(),
+                    'last_sync_datetime': last_sync_datetime,
                     'games': processed_games,  # Use cleaned data
                     'count': len(processed_games),
                     'original_total': original_total if original_total is not None else len(processed_games)
@@ -176,7 +185,7 @@ class GameDataCache:
                 self.cached_games = processed_games  # Store cleaned data
                 
                 elapsed = time.time() - start_time
-                print(f"✅ Background: Cached {len(processed_games):,} games in {elapsed:.2f}s")
+                print(f"✅ Background: Cached {len(processed_games):,} games in {elapsed:.2f}s (last_sync: {last_sync_datetime})")
                 
             except Exception as e:
                 print(f"❌ Background cache save failed: {e}")
@@ -188,6 +197,7 @@ class GameDataCache:
     
     def load_games_cache(self):
         """Load cached games data"""
+        import datetime
         try:
             if not self.games_cache_file.exists():
                 return []
@@ -195,6 +205,16 @@ class GameDataCache:
             with open(self.games_cache_file, 'r', encoding='utf-8') as f:
                 cache_data = json.load(f)
             
+            # Read last_sync_datetime or derive from timestamp
+            self.last_sync_datetime = cache_data.get('last_sync_datetime')
+            if not self.last_sync_datetime and 'timestamp' in cache_data:
+                try:
+                    self.last_sync_datetime = datetime.datetime.fromtimestamp(
+                        cache_data['timestamp'], datetime.timezone.utc
+                    ).strftime('%Y-%m-%dT%H:%M:%SZ')
+                except Exception:
+                    pass
+
             # Check if cache is still valid
             if time.time() - cache_data.get('timestamp', 0) > self.cache_expiry:
                 print("📅 Games cache expired, will refresh on next connection")
@@ -1926,21 +1946,54 @@ class RomMClient:
             return [], 0
 
         try:
-            # For backward compatibility, if no specific limit is requested, fetch ALL games
+            # For backward compatibility, if no specific limit is requested and updated_after is None, fetch ALL games
             if limit == 500 and offset == 0 and updated_after is None:
                 return self._fetch_all_games_chunked(progress_callback)
+            elif updated_after and offset == 0:
+                # Fetch all items updated after timestamp with pagination if needed
+                all_items = []
+                current_offset = 0
+                page_size = max(500, limit)
+                total_updated = 0
+
+                while True:
+                    params = {
+                        'limit': page_size,
+                        'offset': current_offset,
+                        'with_files': 'true',
+                        'fields': 'id,name,fs_name,platform_name,platform_slug,files,multi,path_cover_large,path_cover_small,sibling_roms,rom_user',
+                        'updated_after': updated_after
+                    }
+                    response = self.session.get(
+                        urljoin(self.base_url, '/api/roms'),
+                        params=params,
+                        timeout=30
+                    )
+                    if response.status_code != 200:
+                        print(f"❌ RomM API error fetching updated_after: HTTP {response.status_code}")
+                        break
+
+                    data = response.json()
+                    items = data.get('items', [])
+                    total_updated = data.get('total', 0)
+                    all_items.extend(items)
+
+                    if len(all_items) >= total_updated or not items:
+                        break
+                    current_offset += page_size
+
+                if progress_callback:
+                    progress_callback('batch', {'items': all_items, 'total': total_updated, 'offset': 0})
+
+                return all_items, total_updated
             else:
-                # Specific pagination request or filtered by updated_after
+                # Specific pagination request
                 params = {
                     'limit': limit,
                     'offset': offset,
-                    # RomM 4.9.0 made file expansion opt-in (with_files defaults to
-                    # False); without this the `files` field comes back empty.
                     'with_files': 'true',
-                    'fields': 'id,name,fs_name,platform_name,platform_slug,files,multi,path_cover_large,path_cover_small'
+                    'fields': 'id,name,fs_name,platform_name,platform_slug,files,multi,path_cover_large,path_cover_small,sibling_roms,rom_user'
                 }
-
-                # Add updated_after filter if provided
                 if updated_after:
                     params['updated_after'] = updated_after
 

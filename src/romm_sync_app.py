@@ -7274,7 +7274,7 @@ class SyncWindow(Gtk.ApplicationWindow):
         self.available_games = []  # Initialize games list
 
         # Timestamps for efficient polling with updated_after parameter
-        self._last_full_fetch_time = None  # ISO 8601 datetime of last full data fetch
+        self._last_full_fetch_time = getattr(self.game_cache, 'last_sync_datetime', None)  # ISO 8601 datetime of last sync
 
         self.download_progress = {}
         self._last_progress_update = {}  # rom_id -> timestamp
@@ -9983,9 +9983,17 @@ class SyncWindow(Gtk.ApplicationWindow):
         clear_btn.connect('clicked', self.on_clear_cache)
         cache_box.append(check_btn)
         cache_box.append(clear_btn)
-        cache_row.add_suffix(cache_box)
-        advanced_group.add(cache_row)
-        
+        # Full Library Resync Row
+        resync_row = Adw.ActionRow()
+        resync_row.set_title("Full Library Resync")
+        resync_row.set_subtitle("Re-download all ROM metadata from server from scratch")
+        resync_btn = Gtk.Button(label="Full Resync")
+        resync_btn.set_valign(Gtk.Align.CENTER)
+        resync_btn.set_size_request(100, -1)
+        resync_btn.connect('clicked', lambda b: self.refresh_games_list(force_full_refresh=True))
+        resync_row.add_suffix(resync_btn)
+        advanced_group.add(resync_row)
+
         # Create page and add groups
         page = Adw.PreferencesPage()
         page.add(log_group)
@@ -10473,11 +10481,11 @@ class SyncWindow(Gtk.ApplicationWindow):
             GLib.idle_add(final_update)
 
             # Set timestamp for future incremental updates
-            self._last_full_fetch_time = datetime.datetime.now(timezone.utc).isoformat()
+            sync_time = datetime.datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+            self._last_full_fetch_time = sync_time
 
             # Save cache in background with original ungrouped count
-            content_hash = hash(str(len(games)) + str(games[0].get('rom_id', '') if games else ''))
-            threading.Thread(target=lambda: self.game_cache.save_games_data(games, original_total=total_count), daemon=True).start()
+            threading.Thread(target=lambda: self.game_cache.save_games_data(games, original_total=total_count, last_sync_datetime=sync_time), daemon=True).start()
 
             # Clear collections cache after main library refresh
             if hasattr(self, 'library_section'):
@@ -10487,26 +10495,43 @@ class SyncWindow(Gtk.ApplicationWindow):
             self.log_message(f"Full sync error: {e}")
 
     def perform_incremental_sync(self, download_dir, server_url):
-        """Perform incremental sync using updated_after parameter"""
+        """Perform incremental (differential) sync using updated_after parameter"""
         try:
             sync_start = time.time()
 
             # Fetch only ROMs updated since last check
             updated_after = self._last_full_fetch_time
+            self.log_message(f"Checking for updates since {updated_after}...")
+
             new_roms_data = self.romm_client.get_roms(
-                limit=10000,  # High limit for incremental updates
+                limit=500,
                 offset=0,
                 updated_after=updated_after
             )
 
-            if not new_roms_data or len(new_roms_data) != 2:
-                self.log_message("Incremental sync: no data returned")
+            if new_roms_data is None or len(new_roms_data) != 2:
+                self.log_message("Incremental sync: no data returned, falling back to full sync...")
+                self.perform_full_sync(download_dir, server_url)
                 return
 
             new_roms, _ = new_roms_data
 
             if not new_roms:
-                self.log_message("✓ No new games found")
+                total_elapsed = time.time() - sync_start
+                msg = f"✓ Library is up to date (0 changes, {total_elapsed:.2f}s)"
+                self.log_message(msg)
+
+                now_str = datetime.datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+                self._last_full_fetch_time = now_str
+
+                def update_ui_up_to_date():
+                    self.update_connection_ui_with_message(msg)
+                    GLib.timeout_add(3000, lambda: self.update_connection_ui("connected") or False)
+                    return False
+
+                GLib.idle_add(update_ui_up_to_date)
+                if hasattr(self, 'game_cache'):
+                    threading.Thread(target=lambda: self.game_cache.save_games_data(self.available_games, last_sync_datetime=now_str), daemon=True).start()
                 return
 
             # Process new/updated ROMs
@@ -10514,7 +10539,7 @@ class SyncWindow(Gtk.ApplicationWindow):
             updated_count = 0
 
             # Create a map for fast lookup by rom_id
-            existing_games_map = {g['rom_id']: g for g in self.available_games if 'rom_id' in g}
+            existing_games_map = {g['rom_id']: g for g in self.available_games if isinstance(g, dict) and 'rom_id' in g}
 
             for rom in new_roms:
                 rom_id = rom.get('id')
@@ -10532,34 +10557,28 @@ class SyncWindow(Gtk.ApplicationWindow):
             updated_games = list(existing_games_map.values())
             updated_games = self.library_section.sort_games_consistently(updated_games)
 
+            now_str = datetime.datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+            self._last_full_fetch_time = now_str
+
             def update_ui():
                 self.available_games = updated_games
                 if hasattr(self, 'library_section'):
                     self.library_section.update_games_library(updated_games)
 
                 total_elapsed = time.time() - sync_start
-                if new_count > 0 or updated_count > 0:
-                    msg = f"✓ Found {new_count} new, {updated_count} updated games ({total_elapsed:.2f}s)"
-                    self.log_message(msg)
-                    self.update_connection_ui_with_message(msg)
+                msg = f"✓ Differential sync: {new_count} new, {updated_count} updated games ({total_elapsed:.2f}s)"
+                self.log_message(msg)
+                self.update_connection_ui_with_message(msg)
 
-                    # After 3 seconds, show connected status
-                    def show_connected():
-                        self.update_connection_ui("connected")
-                        return False
-                    GLib.timeout_add(3000, show_connected)
+                GLib.timeout_add(3000, lambda: self.update_connection_ui("connected") or False)
 
             GLib.idle_add(update_ui)
 
-            # Update timestamp
-            self._last_full_fetch_time = datetime.datetime.now(timezone.utc).isoformat()
-
             # Save updated cache in background
-            threading.Thread(target=lambda: self.game_cache.save_games_data(updated_games), daemon=True).start()
+            threading.Thread(target=lambda: self.game_cache.save_games_data(updated_games, last_sync_datetime=now_str), daemon=True).start()
 
         except Exception as e:
             self.log_message(f"Incremental sync error: {e}")
-            # Fall back to full sync on error
             self.log_message("Falling back to full sync...")
             self.perform_full_sync(download_dir, server_url)
 
