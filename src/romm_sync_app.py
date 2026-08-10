@@ -7621,18 +7621,26 @@ class SyncWindow(Gtk.ApplicationWindow):
         self.log_message("🔗 Exchanging pairing code…")
 
         def work():
-            token = RomMClient(url).exchange_pair_code(code)
+            res = RomMClient(url).exchange_pair_code(code)
 
             def done():
                 button.set_sensitive(True)
+                token = res.get('raw_token') if isinstance(res, dict) else res
+                device_id = res.get('device_id') if isinstance(res, dict) else None
                 if token:
                     self.settings.set('RomM', 'url', url)
                     self.settings.set('RomM', 'client_token', token)
                     self.settings.set('RomM', 'auto_connect', 'true')
+                    if device_id:
+                        self.settings.set('Device', 'device_id', device_id)
+                        self.device_id = device_id
                     self.pair_code_row.set_text("")
                     self.log_message("✅ Paired with RomM (Client API Token)")
                     self.refresh_credential_fields()
-                    self.connection_enable_switch.set_active(True)
+                    if not self.connection_enable_switch.get_active():
+                        self.connection_enable_switch.set_active(True)
+                    else:
+                        self.connect_to_romm()
                 else:
                     self.log_message("❌ Pairing failed: invalid or expired code")
                 return False

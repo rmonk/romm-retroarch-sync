@@ -1594,10 +1594,12 @@ class RomMClient:
                 timeout=15,
             )
             if resp.status_code in (200, 201):
-                raw = resp.json().get('raw_token')
+                data = resp.json()
+                raw = data.get('raw_token')
+                device_id = data.get('device_id')
                 if raw:
                     print("✅ Pairing code exchanged for Client API Token")
-                    return raw
+                    return {'raw_token': raw, 'device_id': device_id}
                 print("⚠️ Exchange succeeded but no raw_token in response")
                 return None
             print(f"❌ Pairing exchange failed: HTTP {resp.status_code}: {resp.text[:200]}")
