@@ -7,6 +7,16 @@ on:
       - 'build*'
       - 'v*build*'
   workflow_dispatch:
+    inputs:
+      create_release:
+        description: 'Create GitHub Release for this manual run'
+        required: true
+        type: boolean
+        default: true
+      tag_name:
+        description: 'Custom tag name for manual release (leave empty for auto-generated v1.6-yyyy-mm-dd-build_number)'
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -60,8 +70,20 @@ jobs:
           # Version format: app_version-yyyy-mm-dd-build_number
           FULL_VERSION="${BASE_VER}-${DATE_STR}-${BUILD_NUM}"
           
+          # Determine release tag name
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            RELEASE_TAG="${{ inputs.tag_name }}"
+            if [ -z "$RELEASE_TAG" ]; then
+              RELEASE_TAG="v${FULL_VERSION}"
+            fi
+          else
+            RELEASE_TAG="${{ github.ref_name }}"
+          fi
+
           echo "FULL_VERSION=${FULL_VERSION}" >> $GITHUB_ENV
+          echo "RELEASE_TAG=${RELEASE_TAG}" >> $GITHUB_ENV
           echo "Computed build version: ${FULL_VERSION}"
+          echo "Computed release tag: ${RELEASE_TAG}"
 
       - name: Build AppImage
         env:
@@ -81,10 +103,10 @@ jobs:
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
-        if: startsWith(github.ref, 'refs/tags/')
+        if: startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.create_release != false)
         with:
           name: Release ${{ env.FULL_VERSION }}
-          tag_name: ${{ github.ref_name }}
+          tag_name: ${{ env.RELEASE_TAG }}
           draft: false
           prerelease: false
           files: |
