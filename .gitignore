@@ -5,7 +5,8 @@ __pycache__/
 *.so
 .Python
 build/AppDir/
-!build/AppDir/usr/bin/romm_sync_engine/sync_core.py
+!build/AppDir/usr/bin/romm_sync_engine/
+!build/AppDir/usr/bin/romm_sync_engine/*
 build/RomM-*.AppImage
 build/*.zsync
 develop-eggs/
@@ -73,6 +74,7 @@ screen_*.png
 .config/
 user_data/
 local_settings.ini
+.env
 
 # Development tools
 .pytest_cache/
