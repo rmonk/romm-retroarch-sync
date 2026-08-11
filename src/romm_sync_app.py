@@ -33,13 +33,145 @@ import ssl
 os.environ['REQUESTS_CA_BUNDLE'] = '/etc/ssl/certs/ca-certificates.crt'
 os.environ['SSL_CERT_FILE'] = '/etc/ssl/certs/ca-certificates.crt'
 
+def detect_desktop_environment(manual_de=None):
+    """Detect current Linux desktop environment (GNOME, KDE, SteamOS, XFCE, Cinnamon, MATE, Generic)
+    
+    Args:
+        manual_de: Optional CLI override string (e.g. 'kde', 'gnome', 'steamos')
+    """
+    if manual_de:
+        manual_upper = str(manual_de).strip().upper()
+        if manual_upper == 'STEAMOS':
+            return 'STEAM_OS'
+        if manual_upper in ('GNOME', 'KDE', 'STEAM_OS', 'XFCE', 'CINNAMON', 'MATE', 'GENERIC'):
+            return manual_upper
+
+    xdg_desktop = os.environ.get('XDG_CURRENT_DESKTOP', '').upper()
+    desktop_session = os.environ.get('DESKTOP_SESSION', '').upper()
+    gdmsession = os.environ.get('GDMSESSION', '').upper()
+
+    if 'GAMESCOPE' in xdg_desktop or 'STEAMOS' in xdg_desktop or os.path.exists('/usr/bin/steamos-session'):
+        return 'STEAM_OS'
+    elif 'GNOME' in xdg_desktop or 'GNOME' in desktop_session or 'GNOME' in gdmsession:
+        return 'GNOME'
+    elif 'KDE' in xdg_desktop or 'PLASMA' in desktop_session or 'KDE' in gdmsession:
+        return 'KDE'
+    elif 'XFCE' in xdg_desktop or 'XFCE' in desktop_session:
+        return 'XFCE'
+    elif 'CINNAMON' in xdg_desktop or 'CINNAMON' in desktop_session:
+        return 'CINNAMON'
+    elif 'MATE' in xdg_desktop or 'MATE' in desktop_session:
+        return 'MATE'
+    else:
+        return 'GENERIC'
+
+def get_de_custom_css(de):
+    """Generate dynamic CSS rules tailored for the detected desktop environment"""
+    css_snippets = []
+    if de == 'GNOME':
+        css_snippets.append("""
+            /* GNOME Libadwaita Card & Pill Styling */
+            .card, expanderrow {
+                border-radius: 12px;
+            }
+            scrolledwindow.data-table, .data-table columnview {
+                border-radius: 12px;
+            }
+            .data-table row {
+                min-height: 38px;
+            }
+        """)
+    elif de == 'STEAM_OS':
+        css_snippets.append("""
+            /* SteamOS Game Mode & Handheld Touch Optimization */
+            .card, expanderrow {
+                border-radius: 8px;
+                border: 1px solid alpha(@borders, 0.4);
+            }
+            scrolledwindow.data-table, .data-table columnview {
+                border-radius: 10px;
+            }
+            .data-table row {
+                min-height: 44px;
+                font-size: 1.05em;
+            }
+            button.column-gear-btn {
+                min-width: 24px;
+                min-height: 24px;
+            }
+            :focus {
+                outline: 2px solid @accent_bg_color;
+                outline-offset: 2px;
+            }
+        """)
+    else:
+        # Non-GNOME Traditional Desktop Window Styling (KDE, XFCE, Cinnamon, MATE, Generic)
+        de_label = "KDE Breeze" if de == 'KDE' else f"{de} Traditional Desktop"
+        border_rad = "4px" if de == 'KDE' else "2px"
+        css_snippets.append(f"""
+            /* {de_label} - Traditional Window Styling (Non-GNOME Card Overrides) */
+            .card {{
+                background-color: @window_bg_color;
+                box-shadow: none;
+                border: 1px solid @borders;
+                border-radius: {border_rad};
+            }}
+            expanderrow, preferencesgroup > list {{
+                background-color: @window_bg_color;
+                border: 1px solid @borders;
+                border-radius: {border_rad};
+                box-shadow: none;
+            }}
+            scrolledwindow.data-table, .data-table columnview {{
+                border-radius: {border_rad};
+                border: 1px solid @borders;
+                background-color: @view_bg_color;
+            }}
+            .data-table row {{
+                min-height: 32px;
+                border-bottom: 1px solid alpha(@borders, 0.2);
+            }}
+            button {{
+                border-radius: {border_rad};
+            }}
+            popovermenubar.traditional-top-menubar {{
+                background-color: @window_bg_color;
+                border-bottom: 1px solid alpha(@borders, 0.5);
+                padding: 1px 4px;
+                font-family: -gtk-system-font;
+            }}
+            popovermenubar.traditional-top-menubar item {{
+                padding: 4px 8px;
+                border-radius: {border_rad};
+            }}
+            headerbar.traditional-headerbar {{
+                background-color: @window_bg_color;
+                border-bottom: 1px solid alpha(@borders, 0.4);
+                box-shadow: none;
+            }}
+        """)
+    return "\n".join(css_snippets)
+
 gi.require_version('Gtk', '4.0')
+from gi.repository import Gtk
+
+# Prevent GtkSettings:gtk-application-prefer-dark-theme warning with libadwaita
+try:
+    gtk_settings = Gtk.Settings.get_default()
+    if gtk_settings:
+        gtk_settings.set_property("gtk-application-prefer-dark-theme", False)
+except Exception:
+    pass
 
 # Try to load Adw, fallback to Gtk if not available (e.g., on SteamOS)
 try:
     gi.require_version('Adw', '1')
     from gi.repository import Gtk, Adw, GLib, Gio, GObject
     HAS_ADW = True
+    try:
+        Adw.StyleManager.get_default().set_color_scheme(Adw.ColorScheme.PREFER_DARK)
+    except Exception:
+        pass
 except ValueError:
     # libadwaita not available, use Gtk only
     from gi.repository import Gtk, GLib, Gio, GObject
@@ -679,6 +811,22 @@ class GameItem(GObject.Object):
             return False
         return self.game_data.get('rom_id') == other.game_data.get('rom_id')
 
+    @property
+    def platform_name(self):
+        return self.game_data.get('platform_name') or self.game_data.get('platform') or self.game_data.get('platform_slug', 'Unknown')
+
+    @property
+    def name(self):
+        return self.game_data.get('name', 'Unknown')
+
+    @property
+    def is_downloaded(self):
+        return self.game_data.get('is_downloaded', False)
+
+    @property
+    def size(self):
+        return self.game_data.get('size') or self.game_data.get('local_size', 0)
+
     def __hash__(self):
         """Enable GameItem to be used in sets"""
         return hash(self.game_data.get('rom_id', id(self.game_data)))
@@ -1153,7 +1301,17 @@ class LibraryTreeModel:
         """Restore expansion state immediately (used by search)"""
         self._restore_expansion_from_state(expansion_state)
 
-    def update_library(self, games, group_by='platform', loading=False, sync_status_map=None):
+    def update_library(self, games, group_by='platform', flat=None, loading=False, sync_status_map=None):
+        if flat is None:
+            flat = getattr(self, 'is_flat_view', False)
+        if flat:
+            new_game_items = [GameItem(g) for g in games]
+            if new_game_items:
+                self.root_store.splice(0, self.root_store.get_n_items(), new_game_items)
+            else:
+                self.root_store.remove_all()
+            return
+
         overall_start = time.time()
 
         # Save expansion state before update
@@ -1178,7 +1336,8 @@ class LibraryTreeModel:
         existing_platforms = {}
         for i in range(self.root_store.get_n_items()):
             platform_item = self.root_store.get_item(i)
-            existing_platforms[platform_item.platform_name] = platform_item
+            if isinstance(platform_item, PlatformItem):
+                existing_platforms[platform_item.platform_name] = platform_item
 
         # Build new list of platform items in sorted order
         new_platform_items = []
@@ -1227,20 +1386,21 @@ class EnhancedLibrarySection:
         self.selected_checkboxes = set()  # Keep this for compatibility
         self.selected_rom_ids = set()     # Add this new tracking
         self.selected_game_keys = set()   # Add this for non-ROM ID games
-        self.setup_library_ui()
+        self.is_flat_view = self.parent.settings.get('UI', 'flat_view_enabled', 'false') == 'true'
+        self.library_model.is_flat_view = self.is_flat_view
+        self.show_downloaded_only = self.parent.settings.get('UI', 'show_downloaded_only', 'false') == 'true'
+        self.sort_downloaded_first = False  # Sort mode state
         self.filtered_games = []
         self.search_text = ""
         self.game_progress = {}  # rom_id -> progress_info
-        self.show_downloaded_only = False # Filter state
-        self.sort_downloaded_first = False  # Sort mode state
         self.current_view_mode = 'platform'
         self.collections_games = []
         self.collections_cache_time = 0
         self.collections_cache_duration = 300
         self.view_mode_generation = 0  # Track view mode switches to prevent race conditions
-        # Store selections for each view mode
         self.platform_view_selection = set()  # Store platform view row selections
         self.collection_view_selection = set()  # Store collection view row selections
+        self.setup_library_ui()
         # Store checkbox and game selections for each view mode
         self.platform_view_checkboxes = set()
         self.platform_view_rom_ids = set()
@@ -3059,88 +3219,19 @@ class EnhancedLibrarySection:
         threading.Thread(target=load_collections_optimized, daemon=True).start()
 
     def on_toggle_filter(self, button):
-            """Toggle between showing all games and only downloaded games with no flicker."""
-            # 1. Save the current UI state before making changes
-            scroll_position = 0
-            if hasattr(self, 'column_view'):
-                # Get the parent ScrolledWindow to access its adjustment
-                scrolled_window = self.column_view.get_parent()
-                if scrolled_window:
-                    vadj = scrolled_window.get_vadjustment()
-                    if vadj:
-                        scroll_position = vadj.get_value()
-            
-            # Save the expansion state of the tree
-            expansion_state = self.library_model._get_current_expansion_state()
-            
-            # 2. Freeze the UI to prevent intermediate redraws
-            # This is the key to preventing flicker.
-            self.library_model.root_store.freeze_notify()
-            if hasattr(self, 'column_view'):
-                self.column_view.freeze_notify()
-            
-            try:
-                # 3. Perform all data and state updates
-                self.show_downloaded_only = not self.show_downloaded_only
-                
-                if self.show_downloaded_only:
-                    button.set_icon_name("starred-symbolic") # Use a "filled" icon for active filter
-                    button.set_tooltip_text("Show all games")
-                else:
-                    button.set_icon_name("folder-symbolic") # Use an "outline" icon for inactive
-                    button.set_tooltip_text("Show downloaded only")
-                
-                # Work directly with existing platform items (no redundant filtering)
-                for i in range(self.library_model.root_store.get_n_items()):
-                    platform_item = self.library_model.root_store.get_item(i)
-                    if isinstance(platform_item, PlatformItem):
-                        # Apply download filter only
-                        if self.show_downloaded_only:
-                            filtered_platform_games = [g for g in platform_item.games if g.get('is_downloaded', False)]
-                        else:
-                            filtered_platform_games = platform_item.games.copy()  # Make a copy to avoid modifying original
+        """Toggle between showing all games and only downloaded games."""
+        self.show_downloaded_only = not self.show_downloaded_only
+        self.parent.settings.set('UI', 'show_downloaded_only', str(self.show_downloaded_only).lower())
 
-                        # Apply current sort
-                        if self.sort_downloaded_first:
-                            filtered_platform_games.sort(key=lambda g: (not g.get('is_downloaded', False), g.get('name', '').lower()))
-                        else:
-                            filtered_platform_games.sort(key=lambda g: g.get('name', '').lower())
+        if self.show_downloaded_only:
+            button.set_icon_name("starred-symbolic")
+            button.set_tooltip_text("Show all games")
+        else:
+            button.set_icon_name("folder-symbolic")
+            button.set_tooltip_text("Show downloaded only")
 
-                        # Update child store by removing all and re-adding
-                        platform_item.child_store.remove_all()
-                        for game in filtered_platform_games:
-                            platform_item.child_store.append(GameItem(game))
-
-                # Update filtered_games for other components
-                self.filtered_games = []
-                for i in range(self.library_model.root_store.get_n_items()):
-                    platform_item = self.library_model.root_store.get_item(i)
-                    if isinstance(platform_item, PlatformItem):
-                        self.filtered_games.extend(platform_item.games if not self.show_downloaded_only 
-                                                else [g for g in platform_item.games if g.get('is_downloaded', False)])
-                
-            finally:
-                # 4. Thaw notifications. This triggers a single, batched UI update.
-                # The 'finally' block ensures this runs even if an error occurs.
-                self.library_model.root_store.thaw_notify()
-                if hasattr(self, 'column_view'):
-                    self.column_view.thaw_notify()
-            
-            # 5. Restore the UI state after the update has been processed
-            # We use a short timeout to ensure this runs after the UI has redrawn.
-            def restore_state():
-                self.library_model._restore_expansion_from_state(expansion_state)
-                
-                if hasattr(self, 'column_view'):
-                    scrolled_window = self.column_view.get_parent()
-                    if scrolled_window:
-                        vadj = scrolled_window.get_vadjustment()
-                        if vadj:
-                            # Restore the scroll position smoothly
-                            vadj.set_value(scroll_position)
-                return False # Ensures the function only runs once
-            
-            GLib.timeout_add(50, restore_state)
+        games_source = getattr(self.parent, 'available_games', []) or []
+        self.update_games_library(games_source)
 
     def sort_games_consistently(self, games):
         """Lightning-fast sorting with key pre-computation"""
@@ -4011,7 +4102,7 @@ class EnhancedLibrarySection:
 
             def do_update():
                 update_start = time.time()
-                self.library_model.update_library(games)
+                self.library_model.update_library(games, flat=self.is_flat_view)
 
                 group_filter_start = time.time()
                 self.update_group_filter(games)  # Use filtered games, not all games
@@ -4367,27 +4458,34 @@ class EnhancedLibrarySection:
         view_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=3)
         view_box.add_css_class('linked')
         
-        # Expand all button
-        expand_btn = Gtk.Button.new_from_icon_name("view-list-symbolic")
-        expand_btn.set_tooltip_text("Expand all platforms")
-        expand_btn.connect('clicked', self.on_expand_all)
-        view_box.append(expand_btn)
-        
-        # Collapse all button
-        collapse_btn = Gtk.Button.new_from_icon_name("go-up-symbolic")
-        collapse_btn.set_tooltip_text("Collapse all platforms")
-        collapse_btn.connect('clicked', self.on_collapse_all)
-        view_box.append(collapse_btn)
+        # Flat View toggle button
+        self.flat_view_btn = Gtk.ToggleButton()
+        flat_icon = "view-list-symbolic" if self.is_flat_view else "view-list-tree-symbolic"
+        self.flat_view_btn.set_icon_name(flat_icon)
+        self.flat_view_btn.set_tooltip_text("Toggle Flat View / Tree View")
+        self.flat_view_btn.set_active(self.is_flat_view)
+        self.flat_view_btn.connect('toggled', self.on_flat_view_toggle)
+        view_box.append(self.flat_view_btn)
 
-        # Sort toggle button (between collapse and filter)
-        self.sort_btn = Gtk.Button.new_from_icon_name("view-sort-ascending-symbolic")
-        self.sort_btn.set_tooltip_text("Sort: Downloaded")
-        self.sort_btn.connect('clicked', self.on_toggle_sort)
-        view_box.append(self.sort_btn)
+        # Expand all button (down chevron icon)
+        self.expand_btn = Gtk.Button.new_from_icon_name("pan-down-symbolic")
+        self.expand_btn.set_tooltip_text("Expand all platforms")
+        self.expand_btn.connect('clicked', self.on_expand_all)
+        self.expand_btn.set_sensitive(not self.is_flat_view)
+        view_box.append(self.expand_btn)
+        
+        # Collapse all button (up chevron icon)
+        self.collapse_btn = Gtk.Button.new_from_icon_name("pan-up-symbolic")
+        self.collapse_btn.set_tooltip_text("Collapse all platforms")
+        self.collapse_btn.connect('clicked', self.on_collapse_all)
+        self.collapse_btn.set_sensitive(not self.is_flat_view)
+        view_box.append(self.collapse_btn)
 
         # Filter toggle button
-        self.filter_btn = Gtk.Button.new_from_icon_name("folder-symbolic")
-        self.filter_btn.set_tooltip_text("Show downloaded only")
+        filter_icon = "starred-symbolic" if self.show_downloaded_only else "folder-symbolic"
+        filter_tooltip = "Show all games" if self.show_downloaded_only else "Show downloaded only"
+        self.filter_btn = Gtk.Button.new_from_icon_name(filter_icon)
+        self.filter_btn.set_tooltip_text(filter_tooltip)
         self.filter_btn.connect('clicked', self.on_toggle_filter)
         view_box.append(self.filter_btn)
                 
@@ -4398,9 +4496,6 @@ class EnhancedLibrarySection:
         view_box.append(refresh_btn)
         
         toolbar_box.append(view_box)
-
-        # Collection sync controls removed - now using toggle switches directly
-        
         return toolbar_box
     
     def create_tree_view(self):
@@ -4415,13 +4510,8 @@ class EnhancedLibrarySection:
         scrolled.set_hexpand(True)   # Allow horizontal expansion
 
         scrolled.add_css_class('data-table')
-        
-        # Create MultiSelection model
-        selection_model = Gtk.MultiSelection.new(self.library_model.tree_model)
-        selection_model.connect('selection-changed', self.on_selection_changed)
 
         self.column_view = Gtk.ColumnView()
-        self.column_view.set_model(selection_model)
         self.column_view.add_css_class('data-table')
 
         # Make sure the ColumnView can actually be selected
@@ -4435,25 +4525,33 @@ class EnhancedLibrarySection:
         checkbox_factory = Gtk.SignalListItemFactory()
         checkbox_factory.connect('setup', self.setup_checkbox_cell)
         checkbox_factory.connect('bind', self.bind_checkbox_cell)
-        checkbox_column = Gtk.ColumnViewColumn.new("", checkbox_factory)
-        checkbox_column.set_fixed_width(75)  # Increased width to accommodate both switch and steam button
-        self.column_view.append_column(checkbox_column)
+        self.checkbox_column = Gtk.ColumnViewColumn.new("", checkbox_factory)
+        self.checkbox_column.set_fixed_width(75)  # Increased width to accommodate both switch and steam button
+        self.column_view.append_column(self.checkbox_column)
         
         # Name column with TreeExpander
         name_factory = Gtk.SignalListItemFactory()
         name_factory.connect('setup', self.setup_name_cell)
         name_factory.connect('bind', self.bind_name_cell)
-        name_column = Gtk.ColumnViewColumn.new("Name", name_factory)
-        name_column.set_expand(True)
-        self.column_view.append_column(name_column)
+        self.name_column = Gtk.ColumnViewColumn.new("Name", name_factory)
+        self.name_column.set_expand(True)
+        self.column_view.append_column(self.name_column)
+
+        # Console / Platform column (placed between Name and Status columns)
+        platform_factory = Gtk.SignalListItemFactory()
+        platform_factory.connect('setup', self.setup_platform_cell)
+        platform_factory.connect('bind', self.bind_platform_cell)
+        self.platform_column = Gtk.ColumnViewColumn.new("Platform", platform_factory)
+        self.platform_column.set_fixed_width(140)
+        self.column_view.append_column(self.platform_column)
         
         # Status column
         status_factory = Gtk.SignalListItemFactory()
         status_factory.connect('setup', self.setup_status_cell)
         status_factory.connect('bind', self.bind_status_cell)
-        status_column = Gtk.ColumnViewColumn.new("Status", status_factory)
-        status_column.set_fixed_width(80)
-        self.column_view.append_column(status_column)
+        self.status_column = Gtk.ColumnViewColumn.new("Status", status_factory)
+        self.status_column.set_fixed_width(80)
+        self.column_view.append_column(self.status_column)
 
         # Sync Status column (for collections only)
         sync_status_factory = Gtk.SignalListItemFactory()
@@ -4468,12 +4566,257 @@ class EnhancedLibrarySection:
         size_factory = Gtk.SignalListItemFactory()
         size_factory.connect('setup', self.setup_size_cell)
         size_factory.connect('bind', self.bind_size_cell)
-        size_column = Gtk.ColumnViewColumn.new("Size", size_factory)  # Fixed the typo here
-        size_column.set_fixed_width(150)
-        self.column_view.append_column(size_column)
-        
+        self.size_column = Gtk.ColumnViewColumn.new("Size", size_factory)
+        self.size_column.set_fixed_width(150)
+        self.column_view.append_column(self.size_column)
+
+        # Setup click-to-sort sorters on column headers
+        def _get_item_obj(row):
+            if not row: return None
+            if hasattr(row, 'get_item'):
+                sub = row.get_item()
+                if hasattr(sub, 'get_item'): return sub.get_item()
+                return sub
+            return row
+
+        def _sort_name(a, b, u=None):
+            obj_a, obj_b = _get_item_obj(a), _get_item_obj(b)
+            n_a = (obj_a.name if isinstance(obj_a, GameItem) else getattr(obj_a, 'platform_name', '')) or ''
+            n_b = (obj_b.name if isinstance(obj_b, GameItem) else getattr(obj_b, 'platform_name', '')) or ''
+            n_a, n_b = n_a.lower(), n_b.lower()
+            return -1 if n_a < n_b else (1 if n_a > n_b else 0)
+
+        def _sort_platform(a, b, u=None):
+            obj_a, obj_b = _get_item_obj(a), _get_item_obj(b)
+            p_a = (getattr(obj_a, 'platform_name', '') or (obj_a.game_data.get('platform_name') if hasattr(obj_a, 'game_data') else '') or '').lower()
+            p_b = (getattr(obj_b, 'platform_name', '') or (obj_b.game_data.get('platform_name') if hasattr(obj_b, 'game_data') else '') or '').lower()
+            return -1 if p_a < p_b else (1 if p_a > p_b else 0)
+
+        def _sort_status(a, b, u=None):
+            obj_a, obj_b = _get_item_obj(a), _get_item_obj(b)
+            d_a = 1 if getattr(obj_a, 'is_downloaded', False) else 0
+            d_b = 1 if getattr(obj_b, 'is_downloaded', False) else 0
+            return d_b - d_a
+
+        def _sort_size(a, b, u=None):
+            obj_a, obj_b = _get_item_obj(a), _get_item_obj(b)
+            s_a = getattr(obj_a, 'size', 0) or 0
+            s_b = getattr(obj_b, 'size', 0) or 0
+            return -1 if s_a < s_b else (1 if s_a > s_b else 0)
+
+        self.name_column.set_sorter(Gtk.CustomSorter.new(_sort_name))
+        self.platform_column.set_sorter(Gtk.CustomSorter.new(_sort_platform))
+        self.status_column.set_sorter(Gtk.CustomSorter.new(_sort_status))
+        self.size_column.set_sorter(Gtk.CustomSorter.new(_sort_size))
+
+        self.sort_model = Gtk.SortListModel.new(self.library_model.tree_model, self.column_view.get_sorter())
+        selection_model = Gtk.MultiSelection.new(self.sort_model)
+        selection_model.connect('selection-changed', self.on_selection_changed)
+        self.column_view.set_model(selection_model)
+
+        # Setup gear MenuButton for Column Chooser
+        self.column_chooser_btn = Gtk.MenuButton()
+        gear_img = Gtk.Image.new_from_icon_name("emblem-system-symbolic")
+        self.column_chooser_btn.set_child(gear_img)
+        self.column_chooser_btn.add_css_class("flat")
+        self.column_chooser_btn.add_css_class("column-gear-btn")
+        self.column_chooser_btn.set_tooltip_text("Customize displayed columns")
+
+        # Setup Popover for Column Chooser menu button
+        self.setup_column_chooser_popover()
+
+        # Controller to trigger popover directly on click even inside ColumnView header button
+        gesture = Gtk.GestureClick.new()
+        gesture.connect("pressed", lambda g, n, x, y: self.column_chooser_btn.get_popover().popup() if self.column_chooser_btn.get_popover() else None)
+        self.column_chooser_btn.add_controller(gesture)
+
+        # Attach gear button to rightmost visible column header after realization
+        GLib.idle_add(self.attach_gear_to_rightmost_header)
+
         scrolled.set_child(self.column_view)
         return scrolled
+
+    def setup_platform_cell(self, factory, list_item):
+        label = Gtk.Label()
+        label.set_halign(Gtk.Align.START)
+        label.set_ellipsize(3)  # Pango.EllipsizeMode.END
+        list_item.set_child(label)
+
+    def bind_platform_cell(self, factory, list_item):
+        tree_item = list_item.get_item()
+        label = list_item.get_child()
+        if tree_item:
+            item = tree_item.get_item()
+            if isinstance(item, GameItem):
+                plat = item.game_data.get('platform_name') or item.game_data.get('platform') or item.game_data.get('platform_slug', '')
+                label.set_text(plat)
+            elif isinstance(item, PlatformItem):
+                label.set_text(item.platform_name)
+            else:
+                label.set_text("")
+
+    def attach_gear_to_rightmost_header(self, retries=3):
+        """Place gear menu button on the right side of the rightmost visible column header"""
+        if not hasattr(self, 'column_view') or not hasattr(self, 'column_chooser_btn'):
+            return False
+
+        all_cols = [self.name_column, self.platform_column, self.status_column, self.sync_status_column, self.size_column]
+        visible_cols = [c for c in all_cols if c and c.get_visible()]
+        if not visible_cols:
+            return False
+
+        rightmost_col = visible_cols[-1]
+        title = rightmost_col.get_title()
+
+        # Ensure rightmost column expands so there is ample room for title + gear icon
+        rightmost_col.set_resizable(True)
+        rightmost_col.set_expand(True)
+
+        def _find_header_label_box(container, target_title):
+            def _search(w):
+                # Ignore CheckButtons and Popovers so we never match popover checkboxes
+                if isinstance(w, Gtk.CheckButton) or isinstance(w, Gtk.Popover):
+                    return None, None
+                if isinstance(w, Gtk.Label) and w.get_text() == target_title:
+                    p = w.get_parent()
+                    if isinstance(p, Gtk.Box):
+                        return w, p
+                child = w.get_first_child()
+                while child:
+                    lbl, res = _search(child)
+                    if res: return lbl, res
+                    child = child.get_next_sibling()
+                return None, None
+            return _search(container)
+
+        target_label, target_box = _find_header_label_box(self.column_view, title)
+        if target_box:
+            # 1. Left justify column title label and fill horizontal space to push gear to far right
+            if target_label:
+                target_label.set_halign(Gtk.Align.START)
+                target_label.set_xalign(0.0)
+                target_label.set_hexpand(True)
+
+                # Ensure rightmost column width is expanded if needed to fit title text + gear icon + padding
+                try:
+                    layout = target_label.create_pango_layout(target_label.get_text())
+                    text_width = layout.get_pixel_extents()[1].width
+                    needed_width = max(90, text_width + 16 + 32)
+                    if rightmost_col.get_fixed_width() < needed_width:
+                        rightmost_col.set_fixed_width(needed_width)
+                except Exception:
+                    rightmost_col.set_fixed_width(max(90, rightmost_col.get_fixed_width()))
+
+            # 2. Always refresh child GtkImage so icon is never lost when re-attached
+            gear_img = Gtk.Image.new_from_icon_name("emblem-system-symbolic")
+            gear_img.set_pixel_size(16)
+            self.column_chooser_btn.set_child(gear_img)
+
+            parent = self.column_chooser_btn.get_parent()
+            if parent != target_box:
+                if parent:
+                    parent.remove(self.column_chooser_btn)
+                self.column_chooser_btn.set_valign(Gtk.Align.CENTER)
+                self.column_chooser_btn.set_halign(Gtk.Align.END)
+                self.column_chooser_btn.set_hexpand(False)
+                self.column_chooser_btn.add_css_class("flat")
+                self.column_chooser_btn.add_css_class("column-gear-btn")
+                target_box.append(self.column_chooser_btn)
+            return False
+
+        # If header layout is still rendering, retry shortly
+        if retries > 0:
+            GLib.timeout_add(100, lambda: self.attach_gear_to_rightmost_header(retries - 1))
+
+        return False
+
+    def update_column_visibilities_for_mode(self):
+        """Update column visibility and popover checkbuttons based on active view mode (Flat vs Tree)"""
+        section = 'Columns_Flat' if self.is_flat_view else 'Columns_Tree'
+        defaults = {
+            'col_platform': 'true' if self.is_flat_view else 'false',
+            'col_status': 'true',
+            'col_sync': 'true',
+            'col_size': 'true'
+        }
+        cols_mapping = [
+            (self.platform_column, 'col_platform'),
+            (self.status_column, 'col_status'),
+            (self.sync_status_column, 'col_sync'),
+            (self.size_column, 'col_size')
+        ]
+        for col_obj, setting_key in cols_mapping:
+            def_val = defaults[setting_key]
+            is_vis = self.parent.settings.get(section, setting_key, def_val) == 'true'
+            col_obj.set_visible(is_vis)
+
+        if hasattr(self, 'popover_checkbuttons'):
+            for setting_key, chk in self.popover_checkbuttons.items():
+                def_val = defaults[setting_key]
+                saved_val = self.parent.settings.get(section, setting_key, def_val) == 'true'
+                chk.set_active(saved_val)
+
+        GLib.idle_add(self.attach_gear_to_rightmost_header)
+
+    def setup_column_chooser_popover(self):
+        """Build popover menu for column chooser button"""
+        popover = Gtk.Popover()
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        box.set_margin_top(12)
+        box.set_margin_bottom(12)
+        box.set_margin_start(12)
+        box.set_margin_end(12)
+
+        title = Gtk.Label()
+        title.set_markup("<b>Displayed Columns</b>")
+        title.set_halign(Gtk.Align.START)
+        box.append(title)
+
+        section = 'Columns_Flat' if self.is_flat_view else 'Columns_Tree'
+        default_plat = 'true' if self.is_flat_view else 'false'
+        cols_config = [
+            ("Platform", self.platform_column, 'col_platform', default_plat),
+            ("Status", self.status_column, 'col_status', 'true'),
+            ("Sync Status", self.sync_status_column, 'col_sync', 'true'),
+            ("Size", self.size_column, 'col_size', 'true')
+        ]
+
+        self.popover_checkbuttons = {}
+        for label_text, col_obj, setting_key, default_val in cols_config:
+            chk = Gtk.CheckButton(label=label_text)
+            saved_val = self.parent.settings.get(section, setting_key, default_val) == 'true'
+            chk.set_active(saved_val)
+            col_obj.set_visible(saved_val)
+            chk.connect('toggled', self.on_column_visibility_toggled, col_obj, setting_key)
+            box.append(chk)
+            self.popover_checkbuttons[setting_key] = chk
+
+        popover.set_child(box)
+        self.column_chooser_btn.set_popover(popover)
+
+    def on_column_visibility_toggled(self, check_button, col_obj, setting_key):
+        """Toggle column visibility and save preference for active mode (Flat vs Tree)"""
+        section = 'Columns_Flat' if self.is_flat_view else 'Columns_Tree'
+        is_visible = check_button.get_active()
+        col_obj.set_visible(is_visible)
+        self.parent.settings.set(section, setting_key, str(is_visible).lower())
+        GLib.idle_add(self.attach_gear_to_rightmost_header)
+
+    def on_flat_view_toggle(self, button):
+        """Toggle between Flat View and Tree View"""
+        self.is_flat_view = button.get_active()
+        self.library_model.is_flat_view = self.is_flat_view
+        self.parent.settings.set('UI', 'flat_view_enabled', str(self.is_flat_view).lower())
+        button.set_icon_name("view-list-symbolic" if self.is_flat_view else "view-list-tree-symbolic")
+
+        self.expand_btn.set_sensitive(not self.is_flat_view)
+        self.collapse_btn.set_sensitive(not self.is_flat_view)
+
+        # Apply distinct column visibilities for active view mode (Flat vs Tree)
+        self.update_column_visibilities_for_mode()
+
+        games_to_show = self.filtered_games if self.filtered_games else self.parent.available_games
+        self.update_games_library(games_to_show)
 
     def on_row_activated(self, column_view, position):
         """Handle row activation (double-click)"""
@@ -7223,7 +7566,8 @@ class SettingsBackedEntry:
 class SyncWindow(Gtk.ApplicationWindow):
     """Main application window"""
 
-    def __init__(self, **kwargs):
+    def __init__(self, cli_de=None, **kwargs):
+        self.cli_de = cli_de
         super().__init__(**kwargs)
 
         # Set window icon directly
@@ -7315,6 +7659,31 @@ class SyncWindow(Gtk.ApplicationWindow):
         quit_action.connect("activate", lambda action, param: self.get_application().quit())
         self.add_action(quit_action)
 
+        # Register window actions for traditional menu bar items
+        refresh_act = Gio.SimpleAction.new("refresh", None)
+        refresh_act.connect("activate", lambda a, p: self.library_section.on_refresh_library(None) if hasattr(self, 'library_section') else self.refresh_games_list())
+        self.add_action(refresh_act)
+
+        bios_act = Gio.SimpleAction.new("download_bios", None)
+        bios_act.connect("activate", lambda a, p: self.on_download_all_bios(None))
+        self.add_action(bios_act)
+
+        flat_act = Gio.SimpleAction.new("toggle_flat_view", None)
+        flat_act.connect("activate", lambda a, p: self.library_section.flat_view_btn.set_active(not self.library_section.flat_view_btn.get_active()) if hasattr(self, 'library_section') else None)
+        self.add_action(flat_act)
+
+        filter_act = Gio.SimpleAction.new("toggle_show_downloaded", None)
+        filter_act.connect("activate", lambda a, p: self.library_section.on_toggle_filter(self.library_section.filter_btn) if hasattr(self, 'library_section') else None)
+        self.add_action(filter_act)
+
+        expand_act = Gio.SimpleAction.new("expand_all", None)
+        expand_act.connect("activate", lambda a, p: self.library_section.on_expand_all(None) if hasattr(self, 'library_section') else None)
+        self.add_action(expand_act)
+
+        collapse_act = Gio.SimpleAction.new("collapse_all", None)
+        collapse_act.connect("activate", lambda a, p: self.library_section.on_collapse_all(None) if hasattr(self, 'library_section') else None)
+        self.add_action(collapse_act)
+
         self.tray = TrayIcon(self.get_application(), self)
 
         self._pending_refresh = False
@@ -7398,6 +7767,7 @@ class SyncWindow(Gtk.ApplicationWindow):
             drawing_area: The Gtk.DrawingArea to update
             color: 'green', 'orange', 'red', 'grey', or 'yellow'
         """
+        drawing_area._current_color = color
         def draw_func(area, cr, width, height):
             # Determine RGB color
             if color == 'green':
@@ -7418,6 +7788,10 @@ class SyncWindow(Gtk.ApplicationWindow):
 
         drawing_area.set_draw_func(draw_func)
         drawing_area.queue_draw()
+
+        summary_dots = (getattr(self, 'summary_romm_dot', None), getattr(self, 'summary_retroarch_dot', None), getattr(self, 'summary_autosync_dot', None))
+        if hasattr(self, 'sync_summary_box') and drawing_area not in summary_dots:
+            GLib.idle_add(self.update_sync_summary_dots)
 
     def draw_download_status_icon(self, drawing_area, status_type, progress=None):
         """Draw a download status icon or percentage using Cairo
@@ -8518,101 +8892,120 @@ class SyncWindow(Gtk.ApplicationWindow):
             except Exception:
                 pass  # Fallback if display detection fails
 
-            # Add custom CSS - using very specific targeting
-            css_provider = Gtk.CssProvider()
-            css_provider.load_from_data(b"""
+            self.detected_de = detect_desktop_environment(manual_de=getattr(self, 'cli_de', None))
+            de_css = get_de_custom_css(self.detected_de)
+            css_data = f"""
+            /* Column Chooser gear button compact styling */
+            button.column-gear-btn {{
+                min-width: 16px;
+                min-height: 16px;
+                padding: 0px 2px;
+                margin: 0px;
+                border-radius: 4px;
+            }}
+            button.column-gear-btn image {{
+                min-width: 16px;
+                min-height: 16px;
+                opacity: 1.0;
+            }}
+
             /* Mission Center-inspired styling with system font */
-            .data-table {
+            .data-table {{
                 background: @view_bg_color;
                 font-family: -gtk-system-font;
                 font-size: 1em;
-            }
+            }}
 
             /* Target the ScrolledWindow that contains the tree view */
-            scrolledwindow.data-table {
+            scrolledwindow.data-table {{
                 border: 1px solid @borders;
                 border-radius: 10px;
                 background: @view_bg_color;
-            }
+            }}
 
-            .data-table columnview {
+            .data-table columnview {{
                 border: none;  /* Remove border since ScrolledWindow has it now */
                 border-radius: 10px;
-            }
+            }}
 
             /* Make sure the listview inside respects the rounded corners */
-            .data-table columnview > listview {
+            .data-table columnview > listview {{
                 border-radius: 0px;
-            }
+            }}
 
-            .data-table row {
+            .data-table row {{
                 min-height: 36px;
                 border-bottom: 1px solid alpha(@borders, 0.25);
                 transition: all 150ms ease;
                 background: @view_bg_color;
-            }
+            }}
 
             /* Round the corners of first and last rows */
-            .data-table row:first-child {
+            .data-table row:first-child {{
                 border-top-left-radius: 0px;
                 border-top-right-radius: 0px;
-            }
+            }}
 
-            .data-table row:last-child {
+            .data-table row:last-child {{
                 border-bottom-left-radius: 0px;
                 border-bottom-right-radius: 0px;
                 border-bottom: none;
-            }
+            }}
 
-            .data-table row:nth-child(even) {
+            .data-table row:nth-child(even) {{
                 background: alpha(@window_bg_color, 0.5);
-            }
+            }}
 
-            .data-table row:nth-child(odd) {
+            .data-table row:nth-child(odd) {{
                 background: alpha(@card_bg_color, 0.4);
-            }
+            }}
 
-            .data-table row:hover {
+            .data-table row:hover {{
                 background: alpha(@accent_color, 0.1);
-            }
+            }}
 
             /* Simple selection without rounded corners */
-            columnview > listview > row:selected {
+            columnview > listview > row:selected {{
                 background: alpha(@accent_bg_color, 0.3);
                 color: @window_fg_color;
-            }
+            }}
 
-            columnview > listview > row:selected > cell {
+            columnview > listview > row:selected > cell {{
                 background: alpha(@accent_bg_color, 0.3);
                 color: @window_fg_color;
-            }
+            }}
 
-            .numeric {
+            .numeric {{
                 font-family: -gtk-system-font;
                 font-size: 1em;
                 color: @dim_label_color;
-            }
+            }}
 
             /* Much smaller toggle switches for collection view - using scale transform */
-            switch.compact-switch {
+            switch.compact-switch {{
                 transform: scale(0.65);
                 margin: -8px;
-            }
+            }}
 
             /* Also apply to collection-specific classes */
             switch.collection-synced,
             switch.collection-partial-sync,
-            switch.collection-not-synced {
+            switch.collection-not-synced {{
                 transform: scale(0.65);
                 margin: -8px;
-            }
+            }}
 
             /* Steam button in collection view - ensure proper padding to prevent truncation */
-            button.flat.compact-switch {
+            button.flat.compact-switch {{
                 padding: 4px;
                 margin: 0;
-            }
-            """)
+            }}
+
+            {de_css}
+            """.encode('utf-8')
+
+            css_provider = Gtk.CssProvider()
+            css_provider.load_from_data(css_data)
             Gtk.StyleContext.add_provider_for_display(
                 self.get_display(),
                 css_provider,
@@ -8627,22 +9020,26 @@ class SyncWindow(Gtk.ApplicationWindow):
             self.connection_wrapper.set_margin_top(12)
             main_box.append(self.connection_wrapper)
 
-            # Header bar with menu button
-            header = Adw.HeaderBar()
-            self.set_titlebar(header)
+            # Header bar with menu button (Only for GNOME DE)
+            if self.detected_de == 'GNOME':
+                header = Adw.HeaderBar()
+                self.set_titlebar(header)
 
-            # Add menu button to header bar
-            menu_button = Gtk.MenuButton()
-            menu_button.set_icon_name("open-menu-symbolic")
-            menu_button.set_tooltip_text("Menu")
+                # Add menu button to header bar
+                menu_button = Gtk.MenuButton()
+                menu_button.set_icon_name("open-menu-symbolic")
+                menu_button.set_tooltip_text("Menu")
 
-            # Create simple menu
-            menu = Gio.Menu()
-            menu.append("Logs / Advanced", "win.logs")
-            menu.append("About", "win.about")
-            menu.append("Quit", "win.quit")
-            menu_button.set_menu_model(menu)
-            header.pack_end(menu_button)
+                # Create simple menu
+                menu = Gio.Menu()
+                menu.append("Logs / Advanced", "win.logs")
+                menu.append("About", "win.about")
+                menu.append("Quit", "win.quit")
+                menu_button.set_menu_model(menu)
+                header.pack_end(menu_button)
+            else:
+                # Non-GNOME DE: Let system window manager draw native DE titlebar and window controls
+                self.set_titlebar(None)
 
             # Wrap main_box in a scrolled window to prevent window from expanding
             # when content grows (e.g., expanding library sections)
@@ -8650,8 +9047,44 @@ class SyncWindow(Gtk.ApplicationWindow):
             main_scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
             main_scrolled.set_child(main_box)
 
-            # Set the scrolled window as main content
-            self.set_child(main_scrolled)
+            # For non-GNOME DEs, add traditional top MenuBar (File, View, Tools, Help)
+            if self.detected_de != 'GNOME':
+                menubar_model = Gio.Menu()
+
+                # File Submenu
+                file_menu = Gio.Menu()
+                file_menu.append("Refresh Library", "win.refresh")
+                file_menu.append("Download Missing BIOS", "win.download_bios")
+                file_menu.append("Quit", "win.quit")
+                menubar_model.append_submenu("File", file_menu)
+
+                # View Submenu
+                view_menu = Gio.Menu()
+                view_menu.append("Toggle Flat / Tree View", "win.toggle_flat_view")
+                view_menu.append("Show Downloaded Only", "win.toggle_show_downloaded")
+                view_menu.append("Expand All Platforms", "win.expand_all")
+                view_menu.append("Collapse All Platforms", "win.collapse_all")
+                menubar_model.append_submenu("View", view_menu)
+
+                # Tools Submenu
+                tools_menu = Gio.Menu()
+                tools_menu.append("Logs / Advanced", "win.logs")
+                menubar_model.append_submenu("Tools", tools_menu)
+
+                # Help Submenu
+                help_menu = Gio.Menu()
+                help_menu.append("About", "win.about")
+                menubar_model.append_submenu("Help", help_menu)
+
+                self.top_menubar = Gtk.PopoverMenuBar.new_from_model(menubar_model)
+                self.top_menubar.add_css_class("traditional-top-menubar")
+
+                top_container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+                top_container.append(self.top_menubar)
+                top_container.append(main_scrolled)
+                self.set_child(top_container)
+            else:
+                self.set_child(main_scrolled)
 
             # Create sections
             self.create_connection_section()  # Connection & Sync section (includes RomM, RetroArch, Auto-Sync)
@@ -8662,7 +9095,7 @@ class SyncWindow(Gtk.ApplicationWindow):
             library_title = Gtk.Label()
             library_title.set_markup("<b>Game Library</b>")
             library_title.set_halign(Gtk.Align.START)
-            library_title.set_margin_top(24)
+            library_title.set_margin_top(16 if self.detected_de != 'GNOME' else 24)
             library_title.set_margin_bottom(12)
             library_title.set_margin_start(12)
             main_box.append(library_title)
@@ -8673,11 +9106,14 @@ class SyncWindow(Gtk.ApplicationWindow):
 
             # Wrap library in a styled container to match Connection & Sync section
             library_wrapper = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-            library_wrapper.set_margin_start(12)
-            library_wrapper.set_margin_end(12)
-            library_wrapper.set_margin_bottom(12)
-            # Don't set vexpand - let scrolled window control height with max constraint
-            library_wrapper.add_css_class('card')  # Add card styling for background/border
+            margin = 12 if self.detected_de == 'GNOME' else 6
+            library_wrapper.set_margin_start(margin)
+            library_wrapper.set_margin_end(margin)
+            library_wrapper.set_margin_bottom(margin)
+            if self.detected_de == 'GNOME':
+                library_wrapper.add_css_class('card')
+            else:
+                library_wrapper.add_css_class('traditional-frame')
 
             # Add library container to wrapper
             # Don't set vexpand - scrolled window inside handles expansion within max height
@@ -8791,11 +9227,21 @@ class SyncWindow(Gtk.ApplicationWindow):
     def create_connection_section(self):
         """Create combined connection and sync section"""
         connection_group = Adw.PreferencesGroup()
-        connection_group.set_title("Connection &amp; Sync")
-        # Set explicit margins to match game library
-        connection_group.set_margin_start(12)
-        connection_group.set_margin_end(12)
+        margin = 12 if getattr(self, 'detected_de', 'GNOME') == 'GNOME' else 6
+        connection_group.set_margin_start(margin)
+        connection_group.set_margin_end(margin)
         
+        # Section expander row for the overall Connection & Sync section
+        self.connection_sync_expander = Adw.ExpanderRow()
+        self.connection_sync_expander.set_title("Connection &amp; Sync")
+        self.connection_sync_expander.set_subtitle("RomM Server, RetroArch &amp; Auto-Sync Configuration")
+
+        saved_expanded = self.settings.get('UI', 'connection_sync_expanded', 'true') == 'true'
+        self.connection_sync_expander.set_expanded(saved_expanded)
+        self.connection_sync_expander.connect('notify::expanded', self.on_connection_sync_expanded_changed)
+
+        connection_group.add(self.connection_sync_expander)
+
         # RomM Connection expander (keep as is)
         self.connection_expander = Adw.ExpanderRow()
         self.connection_expander.set_title("RomM Connection")
@@ -8860,6 +9306,7 @@ class SyncWindow(Gtk.ApplicationWindow):
         # pairing flow stays the primary path.
         self.password_login_expander = Adw.ExpanderRow()
         self.password_login_expander.set_title("Sign in with password instead")
+        self.setup_expander_chevrons(self.password_login_expander)
         self.connection_expander.add_row(self.password_login_expander)
 
         # Username entry
@@ -8903,6 +9350,7 @@ class SyncWindow(Gtk.ApplicationWindow):
         device_expander = Adw.ExpanderRow()
         device_expander.set_title("Device Information")
         device_expander.set_subtitle("Registered device details")
+        self.setup_expander_chevrons(device_expander)
         self.connection_expander.add_row(device_expander)
 
         # Device ID (read-only)
@@ -8959,7 +9407,7 @@ class SyncWindow(Gtk.ApplicationWindow):
         delete_device_row.add_suffix(delete_container)
         device_expander.add_row(delete_device_row)
 
-        connection_group.add(self.connection_expander)
+        self.connection_sync_expander.add_row(self.connection_expander)
         
         # RetroArch section - simplified without status monitoring
         self.retroarch_expander = Adw.ExpanderRow()
@@ -9058,8 +9506,6 @@ class SyncWindow(Gtk.ApplicationWindow):
 
         GLib.timeout_add(500, enable_markup_and_update)  # Increased delay to ensure everything is ready
 
-        connection_group.add(self.retroarch_expander)
-
         # Auto-Sync expander with built-in toggle switch
         self.autosync_expander = Adw.ExpanderRow()
         self.autosync_expander.set_title("Auto-Sync")
@@ -9124,9 +9570,92 @@ class SyncWindow(Gtk.ApplicationWindow):
         steam_enable_row.connect('notify::active', self.on_steam_enable_toggle)
         self.autosync_expander.add_row(steam_enable_row)
 
-        connection_group.add(self.autosync_expander)
+        self.connection_sync_expander.add_row(self.retroarch_expander)
+        self.connection_sync_expander.add_row(self.autosync_expander)
+
+        # Create summary status dots container for collapsed Connection & Sync expander
+        self.sync_summary_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        self.sync_summary_box.set_valign(Gtk.Align.CENTER)
+        self.sync_summary_box.set_margin_end(6)
+
+        self.summary_romm_dot = self.create_status_dot('grey', size=15)
+        self.summary_retroarch_dot = self.create_status_dot('grey', size=15)
+        self.summary_autosync_dot = self.create_status_dot('red', size=15)
+
+        self.sync_summary_box.append(self.summary_romm_dot)
+        self.sync_summary_box.append(self.summary_retroarch_dot)
+        self.sync_summary_box.append(self.summary_autosync_dot)
+
+        self.connection_sync_expander.add_suffix(self.sync_summary_box)
+
+        def update_summary_visibility(*args):
+            is_expanded = self.connection_sync_expander.get_expanded()
+            self.sync_summary_box.set_visible(not is_expanded)
+            if not is_expanded:
+                self.update_sync_summary_dots()
+
+        self.connection_sync_expander.connect('notify::expanded', update_summary_visibility)
+        update_summary_visibility()
+
+        for exp in (self.connection_sync_expander, self.connection_expander, self.retroarch_expander, self.autosync_expander):
+            self.setup_expander_chevrons(exp)
 
         self.connection_wrapper.append(connection_group)
+
+    def update_sync_summary_dots(self):
+        """Update summary status dots color and tooltip on collapsed Connection & Sync bar"""
+        if not hasattr(self, 'sync_summary_box'):
+            return
+
+        # RomM Status
+        romm_color = getattr(self.connection_status_dot, '_current_color', 'grey')
+        romm_sub = self.connection_expander.get_subtitle() or "Not connected"
+        clean_romm_sub = re.sub(r'<[^>]*>', '', romm_sub).strip()
+        self.update_status_dot(self.summary_romm_dot, romm_color)
+        self.summary_romm_dot.set_tooltip_text(f"RomM Server: {clean_romm_sub}")
+
+        # RetroArch Status
+        ra_color = getattr(self.retroarch_status_dot, '_current_color', 'grey')
+        ra_sub = self.retroarch_expander.get_subtitle() or "Installation info"
+        clean_ra_sub = re.sub(r'<[^>]*>', '', ra_sub).strip()
+        self.update_status_dot(self.summary_retroarch_dot, ra_color)
+        self.summary_retroarch_dot.set_tooltip_text(f"RetroArch: {clean_ra_sub}")
+
+        # Auto-Sync Status
+        as_color = getattr(self.autosync_status_dot, '_current_color', 'red')
+        as_sub = self.autosync_expander.get_subtitle() or "Disabled"
+        clean_as_sub = re.sub(r'<[^>]*>', '', as_sub).strip()
+        self.update_status_dot(self.summary_autosync_dot, as_color)
+        self.summary_autosync_dot.set_tooltip_text(f"Auto-Sync: {clean_as_sub}")
+
+    def setup_expander_chevrons(self, expander):
+        """Replace missing adw-expander-arrow-symbolic with up/down chevron based on expansion state"""
+        def _get_arrow_image(widget):
+            if isinstance(widget, Gtk.Image):
+                icon_name = widget.get_icon_name()
+                if icon_name in ("adw-expander-arrow-symbolic", "pan-down-symbolic", "pan-up-symbolic", "pan-end-symbolic"):
+                    return widget
+            child = widget.get_first_child()
+            while child:
+                res = _get_arrow_image(child)
+                if res: return res
+                child = child.get_next_sibling()
+            return None
+
+        arrow = _get_arrow_image(expander)
+        if arrow:
+            arrow.remove_css_class("expander-row-arrow")
+            def update_icon(*args):
+                is_expanded = expander.get_expanded()
+                arrow.set_from_icon_name("pan-down-symbolic" if is_expanded else "pan-up-symbolic")
+
+            update_icon()
+            expander.connect('notify::expanded', update_icon)
+
+    def on_connection_sync_expanded_changed(self, expander, pspec):
+        """Save Connection & Sync section expansion state"""
+        is_expanded = expander.get_expanded()
+        self.settings.set('UI', 'connection_sync_expanded', str(is_expanded).lower())
 
     def on_clear_cache(self, button):
         """Clear cached game data"""
@@ -13175,7 +13704,8 @@ class SyncApp(Adw.Application):
         if windows:
             windows[0].present()
         else:
-            win = SyncWindow(application=app)
+            cli_de = getattr(app, 'cli_de', None)
+            win = SyncWindow(application=app, cli_de=cli_de)
             
             # Handle minimized startup
             if hasattr(app, 'start_minimized') and app.start_minimized:
@@ -13199,26 +13729,20 @@ def main():
     parser = argparse.ArgumentParser(description='RomM-RetroArch Sync')
     parser.add_argument('--minimized', action='store_true',
                        help='Start minimized to tray')
+    parser.add_argument('--de', '--desktop-environment', type=str, default=None,
+                       choices=['gnome', 'kde', 'steamos', 'xfce', 'cinnamon', 'mate', 'generic'],
+                       help='Manually specify desktop environment style (gnome, kde, steamos, xfce, cinnamon, mate, generic)')
     args = parser.parse_args()
 
     print("🚀 Starting RomM-RetroArch Sync...")
 
     # GUI mode continues here...
-    # Check desktop environment
-    desktop = os.environ.get('XDG_CURRENT_DESKTOP', 'unknown').lower()
-    print(f"🖥️ Desktop environment: {desktop}")
-    
-    # Check for AppIndicator availability
-    try:
-        gi.require_version('AppIndicator3', '0.1')
-        from gi.repository import AppIndicator3
-        print("✅ AppIndicator3 available")
-    except Exception as e:
-        print(f"⚠️ AppIndicator3 not available: {e}")
-        print("💡 Install libappindicator3-dev for better tray support")
+    active_de = detect_desktop_environment(manual_de=args.de)
+    print(f"🖥️ Desktop environment style: {active_de} (specified: {args.de or 'Auto-detected'})")
     
     app = SyncApp()
     app.start_minimized = args.minimized  # Pass the flag to the app
+    app.cli_de = args.de
     return app.run()
 
 
