@@ -4819,17 +4819,36 @@ class EnhancedLibrarySection:
         self.update_games_library(games_to_show)
 
     def on_row_activated(self, column_view, position):
-        """Handle row activation (double-click)"""
+        """Handle row activation (double-click): launch if downloaded, download if not downloaded"""
         selection_model = column_view.get_model()
         tree_item = selection_model.get_item(position)
         
         if tree_item:
             item = tree_item.get_item()
             if isinstance(item, GameItem):
-                # Double-click on game: download or launch
-                if hasattr(self, 'on_game_action_clicked'):
-                    self.selected_game = item.game_data
-                    self.on_game_action_clicked(None)
+                game_dict = getattr(item, 'game_data', None) or getattr(item, 'game', None)
+                if game_dict:
+                    self.selected_game = game_dict
+                    if hasattr(self.parent, 'selected_game'):
+                        self.parent.selected_game = game_dict
+
+                    is_downloaded = game_dict.get('is_downloaded', False)
+                    if is_downloaded:
+                        # Launch downloaded game
+                        if hasattr(self.parent, 'launch_game'):
+                            self.parent.launch_game(game_dict)
+                    else:
+                        # Download game
+                        if hasattr(self, 'download_game_directly'):
+                            self.download_game_directly(game_dict)
+                        elif hasattr(self.parent, 'download_game'):
+                            self.parent.download_game(game_dict)
+            elif isinstance(item, DiscItem):
+                # Double-click on disc: launch specific disc file
+                disc_path = getattr(item, 'disc_path', None)
+                platform_name = getattr(item, 'platform_name', None)
+                if disc_path and platform_name and hasattr(self.parent, 'retroarch'):
+                    self.parent.retroarch.launch_game(disc_path, platform_name)
             elif isinstance(item, PlatformItem):
                 # Double-click on platform: toggle expansion
                 tree_item.set_expanded(not tree_item.get_expanded())
