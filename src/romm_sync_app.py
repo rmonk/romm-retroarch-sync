@@ -3530,8 +3530,61 @@ class EnhancedLibrarySection:
             return ds[0].get('device_name') or ds[0].get('name')
         return None
 
+    def _get_target_state_directory(self, states_path, game):
+        """Find the exact state directory used by RetroArch for this game.
+        Handles case-insensitivity and core directory structures (e.g. Snes9x, snes9x, Super Nintendo Entertainment System).
+        """
+        states_path = Path(states_path)
+        if not states_path.exists():
+            return states_path
+
+        platform_name = game.get('platform', '')
+        platform_slug = game.get('platform_slug', '')
+        game_name = game.get('name', '')
+        file_name = game.get('file_name', '')
+        stem = (Path(file_name).stem if file_name else game_name).lower()
+
+        # 1. Search existing subdirectories for any file matching stem + '.state'
+        try:
+            subdirs = [d for d in states_path.iterdir() if d.is_dir()]
+            for d in subdirs:
+                try:
+                    for f in d.iterdir():
+                        if f.is_file() and stem in f.name.lower() and '.state' in f.name.lower():
+                            return d
+                except Exception:
+                    pass
+        except Exception:
+            subdirs = []
+
+        # 2. Case-insensitive check for platform_name or platform_slug or core name subdirectories
+        possible_dir_names = set()
+        if platform_name:
+            possible_dir_names.add(platform_name.lower())
+        if platform_slug:
+            possible_dir_names.add(platform_slug.lower())
+
+        core_hint = self.parent.retroarch.get_core_from_platform_slug(platform_slug) if hasattr(self.parent, 'retroarch') and hasattr(self.parent.retroarch, 'get_core_from_platform_slug') else None
+        if core_hint:
+            possible_dir_names.add(core_hint.lower())
+            possible_dir_names.add(f"{core_hint.lower()}_libretro")
+
+        for d in subdirs:
+            if d.name.lower() in possible_dir_names:
+                return d
+
+        # 3. Fallback: use platform_name directory or states_path
+        if platform_name:
+            target = states_path / platform_name
+            target.mkdir(parents=True, exist_ok=True)
+            return target
+
+        return states_path
+
     def _fetch_local_save_states(self, game):
-        """Scan local states directory and return list of all save state files for this game."""
+        """Scan local states directory and return list of all save state files for this game.
+        Handles case insensitivity and core subdirectories (e.g. Snes9x, snes9x, platform dirs).
+        """
         local_states = []
         if not game:
             return local_states
@@ -3551,67 +3604,74 @@ class EnhancedLibrarySection:
             return local_states
 
         states_path = Path(states_dir)
-        platform_name = game.get('platform', '')
         game_name = game.get('name', '')
         file_name = game.get('file_name', '')
-        stem = Path(file_name).stem if file_name else game_name
+        stem = (Path(file_name).stem if file_name else game_name).lower()
 
+        # Build list of directories to scan: root states_path and ALL subdirectories
         search_dirs = [states_path]
-        if platform_name:
-            search_dirs.append(states_path / platform_name)
+        try:
+            for sub_d in states_path.iterdir():
+                if sub_d.is_dir():
+                    search_dirs.append(sub_d)
+        except Exception:
+            pass
 
         found_paths = set()
         for d in search_dirs:
             if not d.exists() or not d.is_dir():
                 continue
-            for f in d.iterdir():
-                if f.is_file() and not f.name.endswith('.png') and not f.name.endswith('.backup'):
-                    if stem.lower() in f.name.lower() and '.state' in f.name.lower():
-                        full_str = str(f)
-                        if full_str in found_paths:
-                            continue
-                        found_paths.add(full_str)
-
-                        # Match slot pattern
+            try:
+                for f in d.iterdir():
+                    if f.is_file() and not f.name.endswith('.png') and not f.name.endswith('.backup'):
                         lower_name = f.name.lower()
-                        idx = lower_name.find('.state')
-                        slot_str = lower_name[idx:] if idx != -1 else ''
+                        if stem in lower_name and '.state' in lower_name:
+                            full_str = str(f.resolve())
+                            if full_str in found_paths:
+                                continue
+                            found_paths.add(full_str)
 
-                        if slot_str == '.state':
-                            slot_name = "Slot 0 (Default)"
-                            slot_code = ".state"
-                        elif slot_str in ('.state.auto', 'auto'):
-                            slot_name = "Auto Save"
-                            slot_code = ".state.auto"
-                        elif slot_str in ('.state.qsv', '.qsv'):
-                            slot_name = "Quicksave"
-                            slot_code = ".state.qsv"
-                        else:
-                            clean_num = slot_str.replace('.state', '').lstrip('.')
-                            slot_name = f"Slot {clean_num}" if clean_num else "Slot 0 (Default)"
-                            slot_code = f".state{clean_num}" if clean_num else ".state"
+                            # Match slot pattern
+                            idx = lower_name.find('.state')
+                            slot_str = lower_name[idx:] if idx != -1 else ''
 
-                        mtime = f.stat().st_mtime
-                        dt_str = datetime.datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M")
-                        file_size = f.stat().st_size
+                            if slot_str == '.state':
+                                slot_name = "Slot 0 (Default)"
+                                slot_code = ".state"
+                            elif slot_str in ('.state.auto', 'auto'):
+                                slot_name = "Auto Save"
+                                slot_code = ".state.auto"
+                            elif slot_str in ('.state.qsv', '.qsv'):
+                                slot_name = "Quicksave"
+                                slot_code = ".state.qsv"
+                            else:
+                                clean_num = slot_str.replace('.state', '').lstrip('.')
+                                slot_name = f"Slot {clean_num}" if clean_num else "Slot 0 (Default)"
+                                slot_code = f".state{clean_num}" if clean_num else ".state"
 
-                        # Look for matching PNG screenshot
-                        png_path = f.with_name(f.name + '.png')
-                        if not png_path.exists():
-                            png_path = f.with_suffix('.png')
-                        has_thumb = png_path.exists() and png_path.stat().st_size > 0
+                            mtime = f.stat().st_mtime
+                            dt_str = datetime.datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M")
+                            file_size = f.stat().st_size
 
-                        local_states.append({
-                            'file_path': str(f),
-                            'file_name': f.name,
-                            'slot_name': slot_name,
-                            'slot_code': slot_code,
-                            'timestamp': dt_str,
-                            'mtime': mtime,
-                            'size_bytes': file_size,
-                            'png_path': str(png_path) if has_thumb else None,
-                            'is_synced': False
-                        })
+                            # Look for matching PNG screenshot
+                            png_path = f.with_name(f.name + '.png')
+                            if not png_path.exists():
+                                png_path = f.with_suffix('.png')
+                            has_thumb = png_path.exists() and png_path.stat().st_size > 0
+
+                            local_states.append({
+                                'file_path': str(f),
+                                'file_name': f.name,
+                                'slot_name': slot_name,
+                                'slot_code': slot_code,
+                                'timestamp': dt_str,
+                                'mtime': mtime,
+                                'size_bytes': file_size,
+                                'png_path': str(png_path) if has_thumb else None,
+                                'is_synced': False
+                            })
+            except Exception as scan_e:
+                print(f"Error scanning directory {d}: {scan_e}")
 
         local_states.sort(key=lambda x: x['mtime'], reverse=True)
         return local_states
@@ -4209,15 +4269,11 @@ class EnhancedLibrarySection:
                     GLib.idle_add(self._set_history_busy, False)
                     return
 
-                platform_name = game.get('platform', '')
                 game_name = game.get('name', '')
                 file_name = game.get('file_name', '')
                 stem = Path(file_name).stem if file_name else game_name
 
-                target_dir = Path(states_dir)
-                if platform_name and (target_dir / platform_name).exists():
-                    target_dir = target_dir / platform_name
-
+                target_dir = self._get_target_state_directory(states_dir, game)
                 target_dir.mkdir(parents=True, exist_ok=True)
                 target_path = target_dir / f"{stem}{target_slot_code}"
 
