@@ -317,6 +317,9 @@ UPDATE_INFO="gh-releases-zsync|Covin90|romm-retroarch-sync|latest|RomM-RetroArch
 echo "📝 Using update info: $UPDATE_INFO"
 echo "📝 Using version: $VERSION"
 
+# Remove previous AppImage file if present to avoid file lock / text file busy error
+rm -f "$APPIMAGE_NAME" 2>/dev/null || true
+
 # Build with update information (removed --appimage-version as it's not supported)
 "$APPIMAGETOOL_CMD" \
     --updateinformation="$UPDATE_INFO" \

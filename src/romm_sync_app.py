@@ -3907,8 +3907,8 @@ class EnhancedLibrarySection:
             vb.append(s)
             hb.append(vb)
 
-            # Right Upload Button
-            upload_btn = Gtk.Button.new_from_icon_name("folder-upload-symbolic")
+            # Right Upload Button (Right facing arrow)
+            upload_btn = Gtk.Button.new_from_icon_name("go-next-symbolic")
             upload_btn.set_tooltip_text("Upload to RomM Server")
             upload_btn.add_css_class("flat")
             upload_btn.connect('clicked', lambda b, entry=loc: self._upload_local_state(entry))
