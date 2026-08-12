@@ -3956,6 +3956,85 @@ class EnhancedLibrarySection:
             row.set_child(hb)
             listbox.append(row)
 
+    def _set_refresh_btn_state(self, state):
+        """Morph the header refresh button by flipping the indicator Stack page:
+        'idle' (refresh icon) | 'busy' (spinner) | 'done' (green ✓). The Stack is
+        homogeneous so the button keeps a constant size in every state."""
+        btn = getattr(self, '_history_refresh_btn', None)
+        stack = getattr(self, '_rb_stack', None)
+        if btn is None or stack is None:
+            return
+        btn.set_opacity(1)
+        sp = getattr(self, '_rb_spinner', None)
+        if state == 'busy':
+            if sp is not None:
+                sp.start()
+            stack.set_visible_child_name('busy')
+            btn.set_sensitive(False)
+        elif state == 'done':
+            if sp is not None:
+                sp.stop()
+            stack.set_visible_child_name('done')
+            btn.set_sensitive(False)
+        else:  # idle
+            if sp is not None:
+                sp.stop()
+            stack.set_visible_child_name('idle')
+            btn.set_sensitive(True)
+
+    def _set_history_busy(self, busy, text=""):
+        if busy:
+            self._history_fade_token = None  # cancel any in-flight success fade
+            self._set_refresh_btn_state('busy')
+            lb = getattr(self, '_history_busy_label', None)
+            if lb is not None:
+                lb.set_opacity(1)
+                lb.set_text(text)
+                lb.set_visible(bool(text))
+        else:
+            self._set_refresh_btn_state('idle')
+            lb = getattr(self, '_history_busy_label', None)
+            if lb is not None:
+                lb.set_visible(False)
+        return False
+
+    def _history_done(self, text="Up to date"):
+        """Turn the refresh button into a ✓ with a message, then fade back to idle."""
+        win = getattr(self, '_history_win', None)
+        if win is None or not win.get_visible():
+            return
+        self._set_refresh_btn_state('done')
+        lb = getattr(self, '_history_busy_label', None)
+        if lb is not None:
+            lb.set_opacity(1)
+            lb.set_text(text)
+            lb.set_visible(bool(text))
+        token = object()
+        self._history_fade_token = token
+        GLib.timeout_add(1600, lambda: self._history_fade_step(token, 1.0))
+
+    def _history_fade_step(self, token, opacity):
+        if getattr(self, '_history_fade_token', None) is not token:
+            return False  # superseded by a newer operation
+        win = getattr(self, '_history_win', None)
+        btn = getattr(self, '_history_refresh_btn', None)
+        lb = getattr(self, '_history_busy_label', None)
+        if win is None or not win.get_visible() or btn is None:
+            return False
+        opacity -= 0.08
+        if opacity <= 0:
+            if lb is not None:
+                lb.set_visible(False)
+                lb.set_opacity(1)
+            self._history_fade_token = None
+            self._set_refresh_btn_state('idle')  # revert ✓ → refresh icon
+            return False
+        btn.set_opacity(opacity)
+        if lb is not None:
+            lb.set_opacity(opacity)
+        GLib.timeout_add(40, lambda: self._history_fade_step(token, opacity))
+        return False
+
     def _on_local_row_selected(self, listbox, row):
         if row is None or not hasattr(row, '_entry'):
             return
