@@ -3478,7 +3478,7 @@ class EnhancedLibrarySection:
     # Save / state history browser (restore older versions)
     # ------------------------------------------------------------------ #
     def on_save_history_clicked(self, button):
-        """Open the save/state history browser for the selected game."""
+        """Open the save state history browser for the selected game."""
         game = self.selected_game
         rom_id = None
         if self.selected_disc:
@@ -3491,11 +3491,33 @@ class EnhancedLibrarySection:
         name = (game or {}).get('name', 'Game')
         self._history_rom_id = rom_id
         self._history_game = game
-        self.parent.log_message(f"📜 Loading save history for {name}…")
+        self.parent.log_message(f"📜 Loading save state history for {name}…")
 
         def worker():
             saves, states = self._fetch_save_history(rom_id)
-            GLib.idle_add(self._show_history_dialog, game, name, saves, states)
+            GLib.idle_add(self._show_history_dialog, game, name, saves, states, 'states')
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def on_save_file_history_clicked(self, button):
+        """Open the battery save file history browser for the selected game."""
+        game = self.selected_game
+        rom_id = None
+        if self.selected_disc:
+            game = self.selected_disc
+            rom_id = self.selected_disc.get('rom_id')
+        elif game:
+            rom_id = game.get('rom_id')
+        if not rom_id or not (self.parent.romm_client and self.parent.romm_client.authenticated):
+            return
+        name = (game or {}).get('name', 'Game')
+        self._history_rom_id = rom_id
+        self._history_game = game
+        self.parent.log_message(f"📜 Loading save file history for {name}…")
+
+        def worker():
+            saves, states = self._fetch_save_history(rom_id)
+            GLib.idle_add(self._show_history_dialog, game, name, saves, states, 'saves')
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -3728,6 +3750,166 @@ class EnhancedLibrarySection:
         local_states.sort(key=lambda x: x['mtime'], reverse=True)
         return local_states
 
+    def _get_target_save_directory(self, saves_path, game):
+        """Find the exact battery saves directory used by RetroArch for this game/core."""
+        saves_path = Path(saves_path)
+        if not saves_path.exists():
+            saves_path.mkdir(parents=True, exist_ok=True)
+
+        platform_val = game.get('platform')
+        if isinstance(platform_val, dict):
+            platform_name = platform_val.get('name', '') or platform_val.get('slug', '')
+            platform_slug = platform_val.get('slug', '') or platform_val.get('name', '')
+        elif isinstance(platform_val, str):
+            platform_name = platform_val
+            platform_slug = game.get('platform_slug', '') or platform_val
+        else:
+            platform_name = game.get('platform_name', '') or ''
+            platform_slug = game.get('platform_slug', '') or ''
+
+        if platform_name == 'Unknown': platform_name = ''
+        if platform_slug == 'Unknown': platform_slug = ''
+
+        game_name = game.get('name', '')
+        file_name = game.get('file_name', '')
+        stem = (Path(file_name).stem if file_name else game_name).lower()
+
+        subdirs = []
+        try:
+            subdirs = [d for d in saves_path.iterdir() if d.is_dir() and d.name != 'Unknown']
+        except Exception:
+            pass
+
+        for d in subdirs:
+            try:
+                for f in d.iterdir():
+                    if f.is_file() and stem in f.name.lower() and not f.name.endswith('.png') and not f.name.endswith('.backup') and '.state' not in f.name.lower():
+                        return d
+            except Exception:
+                pass
+
+        try:
+            for f in saves_path.iterdir():
+                if f.is_file() and stem in f.name.lower() and not f.name.endswith('.png') and not f.name.endswith('.backup') and '.state' not in f.name.lower():
+                    return saves_path
+        except Exception:
+            pass
+
+        candidate_dir_names = []
+        if hasattr(self.parent, 'retroarch') and self.parent.retroarch:
+            ra = self.parent.retroarch
+            cores = []
+            if platform_slug and hasattr(ra, 'platform_core_map'):
+                cores.extend(ra.platform_core_map.get(platform_slug, []))
+            if platform_name and hasattr(ra, 'platform_core_map'):
+                cores.extend(ra.platform_core_map.get(platform_name, []))
+
+            if hasattr(ra, 'get_core_from_platform_slug') and platform_slug:
+                core_hint = ra.get_core_from_platform_slug(platform_slug)
+                if core_hint and core_hint not in cores:
+                    cores.insert(0, core_hint)
+
+            emu_map = getattr(ra, 'emulator_directory_map', {}) or {}
+            for c in cores:
+                c_clean = c.replace('_libretro', '').lower()
+                mapped_name = emu_map.get(c_clean) or emu_map.get(c)
+                if mapped_name and mapped_name not in candidate_dir_names:
+                    candidate_dir_names.append(mapped_name)
+                for var in (c, c_clean, f"{c}_libretro"):
+                    if var and var not in candidate_dir_names:
+                        candidate_dir_names.append(var)
+
+        if platform_name and platform_name not in candidate_dir_names:
+            candidate_dir_names.append(platform_name)
+        if platform_slug and platform_slug not in candidate_dir_names:
+            candidate_dir_names.append(platform_slug)
+
+        candidate_lowers = {c.lower(): c for c in candidate_dir_names}
+        for d in subdirs:
+            if d.name.lower() in candidate_lowers:
+                return d
+
+        if candidate_dir_names:
+            target_name = candidate_dir_names[0]
+            target_dir = saves_path / target_name
+            target_dir.mkdir(parents=True, exist_ok=True)
+            return target_dir
+
+        return saves_path
+
+    def _fetch_local_save_files(self, game):
+        """Scan local saves directory and return list of all battery save files for this game."""
+        local_saves = []
+        if not game:
+            return local_saves
+
+        saves_dir = None
+        if hasattr(self.parent, 'retroarch'):
+            save_dirs = getattr(self.parent.retroarch, 'save_dirs', {}) or {}
+            saves_dir = save_dirs.get('saves')
+            if not saves_dir:
+                try:
+                    dirs = self.parent.retroarch.find_retroarch_dirs()
+                    saves_dir = dirs.get('saves')
+                except Exception:
+                    pass
+
+        if not saves_dir or not Path(saves_dir).exists():
+            return local_saves
+
+        saves_path = Path(saves_dir)
+        game_name = game.get('name', '')
+        file_name = game.get('file_name', '')
+        stem = (Path(file_name).stem if file_name else game_name).lower()
+
+        search_dirs = [saves_path]
+        try:
+            for sub_d in saves_path.iterdir():
+                if sub_d.is_dir():
+                    search_dirs.append(sub_d)
+        except Exception:
+            pass
+
+        found_paths = set()
+        for d in search_dirs:
+            if not d.exists() or not d.is_dir():
+                continue
+            try:
+                for f in d.iterdir():
+                    if f.is_file() and not f.name.endswith('.png') and not f.name.endswith('.backup') and '.state' not in f.name.lower():
+                        lower_name = f.name.lower()
+                        if stem in lower_name:
+                            full_str = str(f.resolve())
+                            if full_str in found_paths:
+                                continue
+                            found_paths.add(full_str)
+
+                            mtime = f.stat().st_mtime
+                            dt_str = datetime.datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M")
+                            file_size = f.stat().st_size
+
+                            png_path = f.with_name(f.name + '.png')
+                            if not png_path.exists():
+                                png_path = f.with_suffix('.png')
+                            has_thumb = png_path.exists() and png_path.stat().st_size > 0
+
+                            local_saves.append({
+                                'file_path': str(f),
+                                'file_name': f.name,
+                                'slot_name': f.name,
+                                'slot_code': f.suffix,
+                                'timestamp': dt_str,
+                                'mtime': mtime,
+                                'size_bytes': file_size,
+                                'png_path': str(png_path) if has_thumb else None,
+                                'is_synced': False
+                            })
+            except Exception as scan_e:
+                print(f"Error scanning directory {d}: {scan_e}")
+
+        local_saves.sort(key=lambda x: x['mtime'], reverse=True)
+        return local_saves
+
     def _cross_reference_synced_states(self, local_states, server_states):
         """Mark local save states as synced if matching entry exists on server."""
         for loc in local_states:
@@ -3743,19 +3925,24 @@ class EnhancedLibrarySection:
                     loc['is_synced'] = True
                     break
 
-    def _show_history_dialog(self, game, name, saves, states):
-        """Three-pane Save State Browser:
-        Top Left: Local Save States (synced green icon & Upload button)
-        Top Right: Server Save States (timestamp & Restore to Slot dropdown)
+    def _show_history_dialog(self, game, name, saves, states, mode='states'):
+        """Three-pane Save State / Save File Browser:
+        Top Left: Local Save States/Files (synced green icon & Upload button)
+        Top Right: Server Save States/Files (timestamp & Restore/Replace action)
         Bottom Center: Screenshot Preview & Details
         """
         self._shot_cache = {}
         self._current_entry = None
         self._current_type = None
+        self._history_mode = mode
+        self._history_game = game
+        self._history_saves = saves
+        self._history_states = states
 
         win = Adw.Window()
         self._history_win = win
-        win.set_title(f"Save State History — {name}")
+        win_title = f"Save File History — {name}" if mode == 'saves' else f"Save State History — {name}"
+        win.set_title(win_title)
         win.set_modal(True)
         win.set_transient_for(self.parent)
         win.set_default_size(920, 680)
@@ -3805,11 +3992,12 @@ class EnhancedLibrarySection:
         top_split = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
         top_split.set_size_request(-1, 320)
 
-        # TOP LEFT PANE: Local Save States
+        # TOP LEFT PANE
         left_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         left_box.set_hexpand(True)
         left_title = Gtk.Label()
-        left_title.set_markup("<b>Local Save States (On Device)</b>")
+        left_heading = "<b>Local Save Files (On Device)</b>" if mode == 'saves' else "<b>Local Save States (On Device)</b>"
+        left_title.set_markup(left_heading)
         left_title.set_halign(Gtk.Align.START)
         left_box.append(left_title)
 
@@ -3825,11 +4013,12 @@ class EnhancedLibrarySection:
         left_scroll.set_child(self._local_history_listbox)
         left_box.append(left_scroll)
 
-        # TOP RIGHT PANE: Server Save States (RomM)
+        # TOP RIGHT PANE
         right_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
         right_box.set_hexpand(True)
         right_title = Gtk.Label()
-        right_title.set_markup("<b>Server Save States (RomM)</b>")
+        right_heading = "<b>Server Save Files (RomM)</b>" if mode == 'saves' else "<b>Server Save States (RomM)</b>"
+        right_title.set_markup(right_heading)
         right_title.set_halign(Gtk.Align.START)
         right_box.append(right_title)
 
@@ -3857,7 +4046,8 @@ class EnhancedLibrarySection:
         bottom_box.set_vexpand(True)
 
         bottom_title = Gtk.Label()
-        bottom_title.set_markup("<b>Save State Screenshot Preview</b>")
+        b_heading = "<b>Save File Screenshot Preview</b>" if mode == 'saves' else "<b>Save State Screenshot Preview</b>"
+        bottom_title.set_markup(b_heading)
         bottom_title.set_halign(Gtk.Align.CENTER)
         bottom_box.append(bottom_title)
 
@@ -3867,7 +4057,7 @@ class EnhancedLibrarySection:
         if hasattr(self._preview_picture, 'set_content_fit') and hasattr(Gtk, 'ContentFit'):
             self._preview_picture.set_content_fit(Gtk.ContentFit.CONTAIN)
 
-        self._preview_status = Gtk.Label(label="Select a local or server save state above to view preview")
+        self._preview_status = Gtk.Label(label="Select a local or server item above to view preview")
         self._preview_status.add_css_class('dim-label')
         self._preview_status.set_wrap(True)
         self._preview_status.set_justify(Gtk.Justification.CENTER)
@@ -3894,16 +4084,22 @@ class EnhancedLibrarySection:
         win.set_content(toolbar_view)
 
         # Initial population
-        local_states = self._fetch_local_save_states(game)
-        self._cross_reference_synced_states(local_states, states)
-        self._fill_local_history_list(local_states)
-        self._fill_server_history_list(saves, states)
+        if mode == 'saves':
+            local_entries = self._fetch_local_save_files(game)
+            server_entries = saves
+        else:
+            local_entries = self._fetch_local_save_states(game)
+            server_entries = states
+
+        self._cross_reference_synced_states(local_entries, server_entries)
+        self._fill_local_history_list(local_entries, mode=mode)
+        self._fill_server_history_list(saves, states, mode=mode)
 
         win.present()
         self._select_first_history_row()
 
-    def _fill_local_history_list(self, local_states):
-        """Populate Top Left pane with local save state rows."""
+    def _fill_local_history_list(self, local_entries, mode='states'):
+        """Populate Top Left pane with local save state or save file rows."""
         listbox = getattr(self, '_local_history_listbox', None)
         if listbox is None:
             return
@@ -3913,18 +4109,19 @@ class EnhancedLibrarySection:
             listbox.remove(child)
             child = nxt
 
-        if not local_states:
+        if not local_entries:
             row = Gtk.ListBoxRow()
             row.set_selectable(False)
             row.set_activatable(False)
-            lbl = Gtk.Label(label="No local save states found on device")
+            msg = "No local save files found on device" if mode == 'saves' else "No local save states found on device"
+            lbl = Gtk.Label(label=msg)
             lbl.add_css_class('dim-label')
             lbl.set_margin_top(12); lbl.set_margin_bottom(12)
             row.set_child(lbl)
             listbox.append(row)
             return
 
-        for loc in local_states:
+        for loc in local_entries:
             row = Gtk.ListBoxRow()
             row._entry = loc
             row._source = 'local'
@@ -3933,7 +4130,6 @@ class EnhancedLibrarySection:
             hb.set_margin_top(6); hb.set_margin_bottom(6)
             hb.set_margin_start(8); hb.set_margin_end(8)
 
-            # Left Synced circular icon
             dot = Gtk.Label()
             if loc.get('is_synced'):
                 dot.set_markup('<span foreground="#4ade80">●</span>')
@@ -3943,12 +4139,11 @@ class EnhancedLibrarySection:
                 dot.set_tooltip_text("Local only (not on server)")
             hb.append(dot)
 
-            # Center text info
             vb = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1)
             vb.set_hexpand(True)
             t = Gtk.Label()
             t.set_xalign(0)
-            t.set_markup(f"<b>{GLib.markup_escape_text(loc.get('slot_name', 'Slot'))}</b> — {GLib.markup_escape_text(loc.get('timestamp', ''))}")
+            t.set_markup(f"<b>{GLib.markup_escape_text(loc.get('slot_name', 'Save File'))}</b> — {GLib.markup_escape_text(loc.get('timestamp', ''))}")
             vb.append(t)
 
             sz_str = self._fmt_size(loc.get('size_bytes', 0))
@@ -3959,18 +4154,20 @@ class EnhancedLibrarySection:
             vb.append(s)
             hb.append(vb)
 
-            # Right Upload Button (Right facing arrow)
             upload_btn = Gtk.Button.new_from_icon_name("go-next-symbolic")
             upload_btn.set_tooltip_text("Upload to RomM Server")
             upload_btn.add_css_class("flat")
-            upload_btn.connect('clicked', lambda b, entry=loc: self._upload_local_state(entry))
+            if mode == 'saves':
+                upload_btn.connect('clicked', lambda b, entry=loc: self._upload_local_save_file(entry))
+            else:
+                upload_btn.connect('clicked', lambda b, entry=loc: self._upload_local_state(entry))
             hb.append(upload_btn)
 
             row.set_child(hb)
             listbox.append(row)
 
-    def _fill_server_history_list(self, saves, states):
-        """Populate Top Right pane with server save state rows."""
+    def _fill_server_history_list(self, saves, states, mode='states'):
+        """Populate Top Right pane with server save state or save file rows."""
         listbox = getattr(self, '_server_history_listbox', None)
         if listbox is None:
             return
@@ -3980,14 +4177,16 @@ class EnhancedLibrarySection:
             listbox.remove(child)
             child = nxt
 
-        server_entries = [e for e in (list(states) + list(saves)) if isinstance(e, dict)]
+        raw_list = saves if mode == 'saves' else states
+        server_entries = [e for e in raw_list if isinstance(e, dict)]
         server_entries.sort(key=lambda x: x.get('updated_at') or x.get('created_at') or '', reverse=True)
 
         if not server_entries:
             row = Gtk.ListBoxRow()
             row.set_selectable(False)
             row.set_activatable(False)
-            lbl = Gtk.Label(label="No save states found on RomM server")
+            msg = "No save files found on RomM server" if mode == 'saves' else "No save states found on RomM server"
+            lbl = Gtk.Label(label=msg)
             lbl.add_css_class('dim-label')
             lbl.set_margin_top(12); lbl.set_margin_bottom(12)
             row.set_child(lbl)
@@ -4003,7 +4202,6 @@ class EnhancedLibrarySection:
             hb.set_margin_top(6); hb.set_margin_bottom(6)
             hb.set_margin_start(8); hb.set_margin_end(8)
 
-            # Left Info
             vb = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1)
             vb.set_hexpand(True)
             ts = self._fmt_ts(e.get('updated_at') or e.get('created_at') or '')
@@ -4022,6 +4220,8 @@ class EnhancedLibrarySection:
             slot = e.get('slot')
             if slot:
                 sub.append(f"Slot {slot}")
+            elif e.get('file_name'):
+                sub.append(e.get('file_name'))
 
             s = Gtk.Label()
             s.set_xalign(0)
@@ -4030,40 +4230,45 @@ class EnhancedLibrarySection:
             vb.append(s)
             hb.append(vb)
 
-            # Right Restore to Slot Popover / Button
-            popover = Gtk.Popover()
-            p_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
-            p_box.set_margin_top(6); p_box.set_margin_bottom(6)
-            p_box.set_margin_start(6); p_box.set_margin_end(6)
+            if mode == 'saves':
+                replace_btn = Gtk.Button(label="Replace Save")
+                replace_btn.set_tooltip_text("Replace local save file with this server version")
+                replace_btn.connect('clicked', lambda btn, entry=e: self._confirm_replace_server_save(entry))
+                hb.append(replace_btn)
+            else:
+                popover = Gtk.Popover()
+                p_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+                p_box.set_margin_top(6); p_box.set_margin_bottom(6)
+                p_box.set_margin_start(6); p_box.set_margin_end(6)
 
-            p_title = Gtk.Label()
-            p_title.set_markup("<b>Select target slot to restore to:</b>")
-            p_title.set_margin_bottom(4)
-            p_box.append(p_title)
+                p_title = Gtk.Label()
+                p_title.set_markup("<b>Select target slot to restore to:</b>")
+                p_title.set_margin_bottom(4)
+                p_box.append(p_title)
 
-            slots_options = [
-                ("Slot 0 (Default)", ".state"),
-                ("Slot 1", ".state1"),
-                ("Slot 2", ".state2"),
-                ("Slot 3", ".state3"),
-                ("Slot 4", ".state4"),
-                ("Slot 5", ".state5"),
-                ("Quicksave", ".state.qsv"),
-                ("Auto Save", ".state.auto"),
-            ]
+                slots_options = [
+                    ("Slot 0 (Default)", ".state"),
+                    ("Slot 1", ".state1"),
+                    ("Slot 2", ".state2"),
+                    ("Slot 3", ".state3"),
+                    ("Slot 4", ".state4"),
+                    ("Slot 5", ".state5"),
+                    ("Quicksave", ".state.qsv"),
+                    ("Auto Save", ".state.auto"),
+                ]
 
-            for opt_label, opt_code in slots_options:
-                b = Gtk.Button(label=opt_label)
-                b.add_css_class("flat")
-                b.connect('clicked', lambda btn, entry=e, code=opt_code, pop=popover: (pop.popdown(), self._restore_server_state_to_slot(entry, code)))
-                p_box.append(b)
+                for opt_label, opt_code in slots_options:
+                    b = Gtk.Button(label=opt_label)
+                    b.add_css_class("flat")
+                    b.connect('clicked', lambda btn, entry=e, code=opt_code, pop=popover: (pop.popdown(), self._restore_server_state_to_slot(entry, code)))
+                    p_box.append(b)
 
-            popover.set_child(p_box)
+                popover.set_child(p_box)
 
-            menu_btn = Gtk.MenuButton()
-            menu_btn.set_label("Restore to Slot ▾")
-            menu_btn.set_popover(popover)
-            hb.append(menu_btn)
+                menu_btn = Gtk.MenuButton()
+                menu_btn.set_label("Restore to Slot ▾")
+                menu_btn.set_popover(popover)
+                hb.append(menu_btn)
 
             row.set_child(hb)
             listbox.append(row)
@@ -4168,14 +4373,15 @@ class EnhancedLibrarySection:
         self._current_source = source
         if not entry:
             self._preview_picture.set_paintable(None)
-            self._preview_status.set_text("Select a save state above to view preview")
+            self._preview_status.set_text("Select a local or server item above to view preview")
             self._preview_status.set_visible(True)
             self._preview_info.set_text("")
             return
 
+        mode = getattr(self, '_history_mode', 'states')
         if source == 'local':
             ts = entry.get('timestamp', '')
-            slot_name = entry.get('slot_name', 'Local Save State')
+            slot_name = entry.get('slot_name', 'Local Item')
             sz = self._fmt_size(entry.get('size_bytes', 0))
             is_synced = entry.get('is_synced', False)
             synced_str = "Synced with server" if is_synced else "Local only"
@@ -4192,14 +4398,15 @@ class EnhancedLibrarySection:
                 except Exception:
                     pass
             self._preview_picture.set_paintable(None)
-            self._preview_status.set_text("No screenshot preview available for this local state")
+            self._preview_status.set_text("No preview screenshot available for this local item")
             self._preview_status.set_visible(True)
 
         elif source == 'server':
             ts = self._fmt_ts(entry.get('updated_at') or entry.get('created_at') or '')
             sz = self._fmt_size(entry.get('size_bytes') or entry.get('file_size_bytes') or 0)
             dev = self._entry_device(entry) or "RomM Server"
-            self._preview_info.set_markup(f"<b>RomM Server Save</b> — {GLib.markup_escape_text(ts)} ({GLib.markup_escape_text(sz)}) · {GLib.markup_escape_text(dev)}")
+            header_text = "RomM Server Save File" if mode == 'saves' else "RomM Server Save State"
+            self._preview_info.set_markup(f"<b>{header_text}</b> — {GLib.markup_escape_text(ts)} ({GLib.markup_escape_text(sz)}) · {GLib.markup_escape_text(dev)}")
 
             sid = entry.get('id')
             if sid in self._shot_cache:
@@ -4212,10 +4419,11 @@ class EnhancedLibrarySection:
 
             self._preview_picture.set_paintable(None)
             self._preview_status.set_visible(True)
-            self._preview_status.set_text("Loading screenshot…")
+            self._preview_status.set_text("Loading preview…")
 
             def worker():
-                data = self._fetch_screenshot_bytes(entry, 'states')
+                save_type = 'saves' if mode == 'saves' else 'states'
+                data = self._fetch_screenshot_bytes(entry, save_type)
                 GLib.idle_add(self._apply_screenshot, sid, data)
             threading.Thread(target=worker, daemon=True).start()
 
@@ -4287,6 +4495,157 @@ class EnhancedLibrarySection:
 
             except Exception as e:
                 GLib.idle_add(self.parent.log_message, f"❌ Save state upload failed: {e}")
+
+            GLib.idle_add(self._refresh_history)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _upload_local_save_file(self, local_entry):
+        """Upload a specific local battery save file to the RomM server."""
+        game = getattr(self, '_history_game', None)
+        if not game or not local_entry:
+            return
+
+        file_path = local_entry.get('file_path')
+        if not file_path or not Path(file_path).exists():
+            return
+
+        self._set_history_busy(True, "Uploading save file to server…")
+
+        def worker():
+            try:
+                rom_id = getattr(self, '_history_rom_id', None)
+                thumbnail_path = local_entry.get('png_path')
+                if not thumbnail_path or not Path(thumbnail_path).exists():
+                    thumbnail_path = self.parent.retroarch.find_thumbnail_for_save_state(file_path) if hasattr(self.parent.retroarch, 'find_thumbnail_for_save_state') else None
+
+                result = self.parent.romm_client.upload_save_with_thumbnail(
+                    rom_id, 'saves', file_path, thumbnail_path, None, self.parent.device_id
+                )
+
+                if result:
+                    GLib.idle_add(self.parent.log_message, f"✅ Uploaded save file {local_entry.get('file_name')} to server")
+                else:
+                    GLib.idle_add(self.parent.log_message, f"⚠️ Upload of {local_entry.get('file_name')} failed")
+
+            except Exception as e:
+                GLib.idle_add(self.parent.log_message, f"❌ Save file upload failed: {e}")
+
+            GLib.idle_add(self._refresh_history)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _confirm_replace_server_save(self, server_entry):
+        """Prompt confirmation before overwriting local save file with server version."""
+        game = getattr(self, '_history_game', None)
+        game_name = (game or {}).get('name', 'selected game')
+
+        msg = f"Are you sure you want to replace your local save file for '{game_name}' with this server version?\n\nYour current local save will be backed up with a .backup extension."
+
+        if hasattr(Adw, 'AlertDialog'):
+            dialog = Adw.AlertDialog.new("Replace Local Save File?", msg)
+            dialog.add_response("cancel", "Cancel")
+            dialog.add_response("replace", "Replace Save")
+            if hasattr(Adw.ResponseAppearance, 'DESTRUCTIVE'):
+                dialog.set_response_appearance("replace", Adw.ResponseAppearance.DESTRUCTIVE)
+            dialog.set_default_response("cancel")
+            dialog.set_close_response("cancel")
+
+            def on_response(d, resp):
+                if resp == "replace":
+                    self._restore_server_save_file(server_entry)
+
+            dialog.connect('response', on_response)
+            dialog.present(getattr(self, '_history_win', self.parent))
+        else:
+            dialog = Gtk.MessageDialog(
+                transient_for=getattr(self, '_history_win', self.parent),
+                modal=True,
+                message_type=Gtk.MessageType.QUESTION,
+                buttons=Gtk.ButtonsType.OK_CANCEL,
+                text="Replace Local Save File?"
+            )
+            dialog.format_secondary_text(msg)
+            def on_response(d, resp):
+                d.destroy()
+                if resp == Gtk.ResponseType.OK:
+                    self._restore_server_save_file(server_entry)
+            dialog.connect('response', on_response)
+            dialog.present()
+
+    def _restore_server_save_file(self, server_entry):
+        """Download & replace local battery save file with server version."""
+        game = getattr(self, '_history_game', None)
+        if not game or not server_entry:
+            return
+
+        self._set_history_busy(True, "Replacing local save file…")
+
+        def worker():
+            try:
+                import shutil
+                save_id = server_entry.get('id')
+
+                save_dirs = getattr(self.parent.retroarch, 'save_dirs', {}) or {}
+                saves_dir = save_dirs.get('saves')
+                if not saves_dir:
+                    dirs = self.parent.retroarch.find_retroarch_dirs()
+                    saves_dir = dirs.get('saves')
+
+                if not saves_dir:
+                    GLib.idle_add(self.parent.log_message, "❌ Local saves directory not found")
+                    GLib.idle_add(self._set_history_busy, False)
+                    return
+
+                game_name = game.get('name', '')
+                file_name = game.get('file_name', '')
+                stem = Path(file_name).stem if file_name else game_name
+
+                target_dir = self._get_target_save_directory(saves_dir, game)
+                target_dir.mkdir(parents=True, exist_ok=True)
+
+                ext = '.srm'
+                srv_fn = server_entry.get('file_name') or ''
+                if srv_fn and '.' in srv_fn:
+                    ext = Path(srv_fn).suffix
+
+                try:
+                    for f in target_dir.iterdir():
+                        if f.is_file() and stem.lower() in f.name.lower() and not f.name.endswith('.png') and not f.name.endswith('.backup'):
+                            ext = f.suffix
+                            break
+                except Exception:
+                    pass
+
+                target_path = target_dir / f"{stem}{ext}"
+
+                if target_path.exists():
+                    backup_path = target_path.with_suffix(target_path.suffix + '.backup')
+                    shutil.copy2(target_path, backup_path)
+
+                fallback_url = server_entry.get('download_path') or server_entry.get('path')
+                success = self.parent.romm_client.download_save_by_id(
+                    save_id=save_id,
+                    save_type='saves',
+                    download_path=target_path,
+                    device_id=getattr(self.parent, 'device_id', None),
+                    fallback_url=fallback_url
+                )
+
+                if not success:
+                    GLib.idle_add(self.parent.log_message, f"❌ Failed to download save file {save_id} from server")
+                    GLib.idle_add(self._set_history_busy, False)
+                    return
+
+                shot_bytes = self.parent.romm_client.fetch_screenshot_bytes(server_entry, 'saves')
+                if shot_bytes:
+                    png_path = target_path.with_name(target_path.name + '.png')
+                    png_path.write_bytes(shot_bytes)
+
+                GLib.idle_add(self.parent.log_message, f"✅ Replaced save file with {target_path.name}")
+
+            except Exception as e:
+                GLib.idle_add(self.parent.log_message, f"❌ Save file restore failed: {e}")
 
             GLib.idle_add(self._refresh_history)
 
@@ -6125,12 +6484,19 @@ class EnhancedLibrarySection:
         self.open_in_romm_button.connect('clicked', self.on_open_in_romm_clicked)
         single_actions.append(self.open_in_romm_button)
 
-        # Save history button - browse/restore older save & state versions
+        # Save state history button - browse/restore older save state versions
         self.history_button = Gtk.Button.new_from_icon_name("document-open-recent-symbolic")
-        self.history_button.set_tooltip_text("Browse and restore older save/state versions")
+        self.history_button.set_tooltip_text("Browse and restore save state versions")
         self.history_button.set_sensitive(False)
         self.history_button.connect('clicked', self.on_save_history_clicked)
         single_actions.append(self.history_button)
+
+        # Save file history button - browse/restore battery save versions (floppy disk icon)
+        self.save_file_history_button = Gtk.Button.new_from_icon_name("media-floppy-symbolic")
+        self.save_file_history_button.set_tooltip_text("Browse and restore save file versions")
+        self.save_file_history_button.set_sensitive(False)
+        self.save_file_history_button.connect('clicked', self.on_save_file_history_clicked)
+        single_actions.append(self.save_file_history_button)
 
         
         action_box.append(single_actions)
@@ -6201,7 +6567,10 @@ class EnhancedLibrarySection:
             downloaded = False
         # Single selection only (no bulk), connected, downloaded, with a rom_id
         single = len(getattr(self, 'selected_game_keys', set())) <= 1
-        self.history_button.set_sensitive(bool(connected and rom_id and downloaded and single))
+        is_sensitive = bool(connected and rom_id and downloaded and single)
+        self.history_button.set_sensitive(is_sensitive)
+        if hasattr(self, 'save_file_history_button'):
+            self.save_file_history_button.set_sensitive(is_sensitive)
 
     def update_action_buttons(self):
         """Update action buttons based on selected game(s) or platform"""
