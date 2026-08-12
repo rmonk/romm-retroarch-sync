@@ -3045,6 +3045,17 @@ class RomMClient:
                         actual_bytes += len(chunk)
 
             if download_path.exists() and download_path.stat().st_size > 0:
+                last_modified = response.headers.get('last-modified')
+                if last_modified:
+                    try:
+                        import email.utils
+                        parsed_dt = email.utils.parsedate_to_datetime(last_modified)
+                        if parsed_dt:
+                            mod_ts = parsed_dt.timestamp()
+                            os.utime(download_path, (mod_ts, mod_ts))
+                    except Exception as ts_err:
+                        logging.debug(f"Could not set mtime from Last-Modified header: {ts_err}")
+
                 if device_id and used_device_id:
                     self.confirm_save_downloaded(save_id, save_type, device_id)
                 return True

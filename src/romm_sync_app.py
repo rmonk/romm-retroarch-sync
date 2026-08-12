@@ -4647,6 +4647,13 @@ class EnhancedLibrarySection:
                     GLib.idle_add(self._set_history_busy, False)
                     return
 
+                ts = self._parse_entry_mtime(server_entry)
+                if ts and target_path.exists():
+                    try:
+                        os.utime(target_path, (ts, ts))
+                    except Exception as utime_err:
+                        print(f"Error setting mtime on {target_path}: {utime_err}")
+
                 shot_bytes = self.parent.romm_client.fetch_screenshot_bytes(server_entry, 'saves')
                 if shot_bytes:
                     png_path = target_path.with_name(target_path.name + '.png')
@@ -4660,6 +4667,25 @@ class EnhancedLibrarySection:
             GLib.idle_add(self._refresh_history)
 
         threading.Thread(target=worker, daemon=True).start()
+
+    def _parse_entry_mtime(self, server_entry):
+        """Extract Unix epoch timestamp float from server entry metadata."""
+        if not isinstance(server_entry, dict):
+            return None
+        iso = server_entry.get('updated_at') or server_entry.get('created_at') or server_entry.get('timestamp')
+        if iso:
+            try:
+                dt = datetime.datetime.fromisoformat(str(iso).replace('Z', '+00:00'))
+                return dt.timestamp()
+            except Exception as e:
+                print(f"Error parsing entry timestamp '{iso}': {e}")
+        mtime = server_entry.get('mtime')
+        if mtime:
+            try:
+                return float(mtime)
+            except Exception:
+                pass
+        return None
 
     def _restore_server_state_to_slot(self, server_entry, target_slot_code):
         """Download & restore a server save state directly to a specific local slot."""
@@ -4710,6 +4736,13 @@ class EnhancedLibrarySection:
                     GLib.idle_add(self.parent.log_message, f"❌ Failed to download save state {save_id} from server")
                     GLib.idle_add(self._set_history_busy, False)
                     return
+
+                ts = self._parse_entry_mtime(server_entry)
+                if ts and target_path.exists():
+                    try:
+                        os.utime(target_path, (ts, ts))
+                    except Exception as utime_err:
+                        print(f"Error setting mtime on {target_path}: {utime_err}")
 
                 # Fetch screenshot
                 shot_bytes = self.parent.romm_client.fetch_screenshot_bytes(server_entry, 'states')
