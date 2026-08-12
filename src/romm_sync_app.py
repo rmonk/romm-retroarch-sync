@@ -4107,6 +4107,44 @@ class EnhancedLibrarySection:
                 GLib.idle_add(self._apply_screenshot, sid, data)
             threading.Thread(target=worker, daemon=True).start()
 
+    def _fetch_screenshot_bytes(self, entry, save_type='states'):
+        """Fetch screenshot image bytes for a save/state entry from RomM client."""
+        if not hasattr(self.parent, 'romm_client') or not self.parent.romm_client:
+            return None
+        try:
+            return self.parent.romm_client.fetch_screenshot_bytes(entry, save_type)
+        except Exception as e:
+            print(f"Error fetching screenshot bytes: {e}")
+            return None
+
+    def _apply_screenshot(self, sid, data):
+        """Decode screenshot bytes and apply texture to preview picture."""
+        from gi.repository import Gdk
+        tex = None
+        if data:
+            try:
+                tex = Gdk.Texture.new_from_bytes(GLib.Bytes.new(data))
+            except Exception:
+                try:
+                    from gi.repository import GdkPixbuf
+                    loader = GdkPixbuf.PixbufLoader()
+                    loader.write(data)
+                    loader.close()
+                    pixbuf = loader.get_pixbuf()
+                    if pixbuf is not None:
+                        tex = Gdk.Texture.new_for_pixbuf(pixbuf)
+                except Exception as e:
+                    print(f"Screenshot decode failed: {e}")
+        self._shot_cache[sid] = tex
+        if self._current_entry and self._current_entry.get('id') == sid:
+            self._preview_picture.set_paintable(tex)
+            if tex is None:
+                self._preview_status.set_text("No screenshot available for this server version")
+                self._preview_status.set_visible(True)
+            else:
+                self._preview_status.set_visible(False)
+        return False
+
     def _upload_local_state(self, local_entry):
         """Upload a specific local save state file to the RomM server."""
         game = getattr(self, '_history_game', None)
