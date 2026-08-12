@@ -3945,7 +3945,7 @@ class EnhancedLibrarySection:
         win.set_title(win_title)
         win.set_modal(True)
         win.set_transient_for(self.parent)
-        win.set_default_size(920, 680)
+        win.set_default_size(920, 440 if mode == 'saves' else 680)
 
         toolbar_view = Adw.ToolbarView()
         header_bar = Adw.HeaderBar()
@@ -3990,7 +3990,10 @@ class EnhancedLibrarySection:
 
         # TOP SPLIT PANE (HORIZONTAL)
         top_split = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
-        top_split.set_size_request(-1, 320)
+        if mode == 'saves':
+            top_split.set_vexpand(True)
+        else:
+            top_split.set_size_request(-1, 320)
 
         # TOP LEFT PANE
         left_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
@@ -4039,47 +4042,52 @@ class EnhancedLibrarySection:
         top_split.append(right_box)
         main_vbox.append(top_split)
 
-        main_vbox.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
+        if mode != 'saves':
+            main_vbox.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
 
-        # BOTTOM CENTER PANE: Screenshot Preview
-        bottom_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
-        bottom_box.set_vexpand(True)
+            # BOTTOM CENTER PANE: Screenshot Preview
+            bottom_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+            bottom_box.set_vexpand(True)
 
-        bottom_title = Gtk.Label()
-        b_heading = "<b>Save File Screenshot Preview</b>" if mode == 'saves' else "<b>Save State Screenshot Preview</b>"
-        bottom_title.set_markup(b_heading)
-        bottom_title.set_halign(Gtk.Align.CENTER)
-        bottom_box.append(bottom_title)
+            bottom_title = Gtk.Label()
+            bottom_title.set_markup("<b>Save State Screenshot Preview</b>")
+            bottom_title.set_halign(Gtk.Align.CENTER)
+            bottom_box.append(bottom_title)
 
-        self._preview_picture = Gtk.Picture()
-        self._preview_picture.set_size_request(340, 200)
-        self._preview_picture.set_halign(Gtk.Align.CENTER)
-        if hasattr(self._preview_picture, 'set_content_fit') and hasattr(Gtk, 'ContentFit'):
-            self._preview_picture.set_content_fit(Gtk.ContentFit.CONTAIN)
+            self._preview_picture = Gtk.Picture()
+            self._preview_picture.set_size_request(340, 200)
+            self._preview_picture.set_halign(Gtk.Align.CENTER)
+            if hasattr(self._preview_picture, 'set_content_fit') and hasattr(Gtk, 'ContentFit'):
+                self._preview_picture.set_content_fit(Gtk.ContentFit.CONTAIN)
 
-        self._preview_status = Gtk.Label(label="Select a local or server item above to view preview")
-        self._preview_status.add_css_class('dim-label')
-        self._preview_status.set_wrap(True)
-        self._preview_status.set_justify(Gtk.Justification.CENTER)
-        self._preview_status.set_halign(Gtk.Align.CENTER)
-        self._preview_status.set_valign(Gtk.Align.CENTER)
+            self._preview_status = Gtk.Label(label="Select a local or server item above to view preview")
+            self._preview_status.add_css_class('dim-label')
+            self._preview_status.set_wrap(True)
+            self._preview_status.set_justify(Gtk.Justification.CENTER)
+            self._preview_status.set_halign(Gtk.Align.CENTER)
+            self._preview_status.set_valign(Gtk.Align.CENTER)
 
-        preview_overlay = Gtk.Overlay()
-        preview_overlay.set_child(self._preview_picture)
-        preview_overlay.add_overlay(self._preview_status)
-        preview_overlay.set_halign(Gtk.Align.CENTER)
+            preview_overlay = Gtk.Overlay()
+            preview_overlay.set_child(self._preview_picture)
+            preview_overlay.add_overlay(self._preview_status)
+            preview_overlay.set_halign(Gtk.Align.CENTER)
 
-        pic_frame = Gtk.Frame()
-        pic_frame.set_child(preview_overlay)
-        pic_frame.set_halign(Gtk.Align.CENTER)
-        bottom_box.append(pic_frame)
+            pic_frame = Gtk.Frame()
+            pic_frame.set_child(preview_overlay)
+            pic_frame.set_halign(Gtk.Align.CENTER)
+            bottom_box.append(pic_frame)
 
-        self._preview_info = Gtk.Label(label="")
-        self._preview_info.set_halign(Gtk.Align.CENTER)
-        self._preview_info.set_wrap(True)
-        bottom_box.append(self._preview_info)
+            self._preview_info = Gtk.Label(label="")
+            self._preview_info.set_halign(Gtk.Align.CENTER)
+            self._preview_info.set_wrap(True)
+            bottom_box.append(self._preview_info)
 
-        main_vbox.append(bottom_box)
+            main_vbox.append(bottom_box)
+        else:
+            self._preview_picture = None
+            self._preview_status = None
+            self._preview_info = None
+
         toolbar_view.set_content(main_vbox)
         win.set_content(toolbar_view)
 
@@ -4371,6 +4379,8 @@ class EnhancedLibrarySection:
     def _update_preview(self, entry, source):
         self._current_entry = entry
         self._current_source = source
+        if not hasattr(self, '_preview_picture') or self._preview_picture is None:
+            return
         if not entry:
             self._preview_picture.set_paintable(None)
             self._preview_status.set_text("Select a local or server item above to view preview")
