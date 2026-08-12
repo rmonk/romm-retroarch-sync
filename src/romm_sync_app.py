@@ -3530,8 +3530,113 @@ class EnhancedLibrarySection:
             return ds[0].get('device_name') or ds[0].get('name')
         return None
 
+    def _fetch_local_save_states(self, game):
+        """Scan local states directory and return list of all save state files for this game."""
+        local_states = []
+        if not game:
+            return local_states
+
+        states_dir = None
+        if hasattr(self.parent, 'retroarch'):
+            save_dirs = getattr(self.parent.retroarch, 'save_dirs', {}) or {}
+            states_dir = save_dirs.get('states')
+            if not states_dir:
+                try:
+                    dirs = self.parent.retroarch.find_retroarch_dirs()
+                    states_dir = dirs.get('states')
+                except Exception:
+                    pass
+
+        if not states_dir or not Path(states_dir).exists():
+            return local_states
+
+        states_path = Path(states_dir)
+        platform_name = game.get('platform', '')
+        game_name = game.get('name', '')
+        file_name = game.get('file_name', '')
+        stem = Path(file_name).stem if file_name else game_name
+
+        search_dirs = [states_path]
+        if platform_name:
+            search_dirs.append(states_path / platform_name)
+
+        found_paths = set()
+        for d in search_dirs:
+            if not d.exists() or not d.is_dir():
+                continue
+            for f in d.iterdir():
+                if f.is_file() and not f.name.endswith('.png') and not f.name.endswith('.backup'):
+                    if stem.lower() in f.name.lower() and '.state' in f.name.lower():
+                        full_str = str(f)
+                        if full_str in found_paths:
+                            continue
+                        found_paths.add(full_str)
+
+                        # Match slot pattern
+                        lower_name = f.name.lower()
+                        idx = lower_name.find('.state')
+                        slot_str = lower_name[idx:] if idx != -1 else ''
+
+                        if slot_str == '.state':
+                            slot_name = "Slot 0 (Default)"
+                            slot_code = ".state"
+                        elif slot_str in ('.state.auto', 'auto'):
+                            slot_name = "Auto Save"
+                            slot_code = ".state.auto"
+                        elif slot_str in ('.state.qsv', '.qsv'):
+                            slot_name = "Quicksave"
+                            slot_code = ".state.qsv"
+                        else:
+                            clean_num = slot_str.replace('.state', '').lstrip('.')
+                            slot_name = f"Slot {clean_num}" if clean_num else "Slot 0 (Default)"
+                            slot_code = f".state{clean_num}" if clean_num else ".state"
+
+                        mtime = f.stat().st_mtime
+                        dt_str = datetime.datetime.fromtimestamp(mtime).strftime("%Y-%m-%d %H:%M")
+                        file_size = f.stat().st_size
+
+                        # Look for matching PNG screenshot
+                        png_path = f.with_name(f.name + '.png')
+                        if not png_path.exists():
+                            png_path = f.with_suffix('.png')
+                        has_thumb = png_path.exists() and png_path.stat().st_size > 0
+
+                        local_states.append({
+                            'file_path': str(f),
+                            'file_name': f.name,
+                            'slot_name': slot_name,
+                            'slot_code': slot_code,
+                            'timestamp': dt_str,
+                            'mtime': mtime,
+                            'size_bytes': file_size,
+                            'png_path': str(png_path) if has_thumb else None,
+                            'is_synced': False
+                        })
+
+        local_states.sort(key=lambda x: x['mtime'], reverse=True)
+        return local_states
+
+    def _cross_reference_synced_states(self, local_states, server_states):
+        """Mark local save states as synced if matching entry exists on server."""
+        for loc in local_states:
+            loc_sz = loc.get('size_bytes', 0)
+            loc_slot = loc.get('slot_code', '')
+            for srv in server_states:
+                if not isinstance(srv, dict):
+                    continue
+                srv_sz = srv.get('size_bytes') or srv.get('file_size_bytes', 0)
+                srv_fn = (srv.get('file_name') or '').lower()
+                srv_slot = srv.get('slot') or ''
+                if (srv_sz > 0 and abs(srv_sz - loc_sz) < 512) or (srv_slot and srv_slot in loc_slot) or (loc_slot and loc_slot in srv_fn):
+                    loc['is_synced'] = True
+                    break
+
     def _show_history_dialog(self, game, name, saves, states):
-        """Master–detail browser: version list (left) + screenshot preview (right)."""
+        """Three-pane Save State Browser:
+        Top Left: Local Save States (synced green icon & Upload button)
+        Top Right: Server Save States (timestamp & Restore to Slot dropdown)
+        Bottom Center: Screenshot Preview & Details
+        """
         self._shot_cache = {}
         self._current_entry = None
         self._current_type = None
@@ -3541,18 +3646,17 @@ class EnhancedLibrarySection:
         win.set_title(f"Save History — {name}")
         win.set_modal(True)
         win.set_transient_for(self.parent)
-        win.set_default_size(840, 600)
+        win.set_default_size(920, 680)
+
         toolbar_view = Adw.ToolbarView()
         header_bar = Adw.HeaderBar()
-        # The refresh button itself morphs: refresh icon → spinner → green ✓ →
-        # back to refresh. A left-anchored status label sits next to it.
+
+        # Refresh button & busy indicator
         self._history_refresh_btn = Gtk.Button()
         self._history_refresh_btn.add_css_class('image-button')
-        self._history_refresh_btn.set_tooltip_text("Refresh history from server")
+        self._history_refresh_btn.set_tooltip_text("Refresh history from server and local disk")
         self._history_refresh_btn.connect('clicked', lambda b: self._refresh_history())
-        # Keep the button a constant size across states: a homogeneous Stack holds
-        # all three indicators so switching the visible page never resizes the
-        # button (a swapped Label child would otherwise widen it to a rectangle).
+
         self._rb_icon = Gtk.Image.new_from_icon_name("view-refresh-symbolic")
         self._rb_icon.set_pixel_size(16)
         self._rb_spinner = Gtk.Spinner()
@@ -3567,466 +3671,500 @@ class EnhancedLibrarySection:
             w.set_size_request(16, 16)
             self._rb_stack.add_named(w, nm)
         self._history_refresh_btn.set_child(self._rb_stack)
+
         self._history_busy_label = Gtk.Label()
         self._history_busy_label.add_css_class('dim-label')
         self._history_busy_label.set_xalign(0)
         self._history_busy_label.set_visible(False)
         self._set_refresh_btn_state('idle')
+
         status_box = Gtk.Box(spacing=6)
         status_box.append(self._history_refresh_btn)
         status_box.append(self._history_busy_label)
         header_bar.pack_start(status_box)
         toolbar_view.add_top_bar(header_bar)
 
-        content = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+        # MAIN VBOX
+        main_vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        main_vbox.set_margin_top(8); main_vbox.set_margin_bottom(8)
+        main_vbox.set_margin_start(12); main_vbox.set_margin_end(12)
 
-        # LEFT: grouped version list
+        # TOP SPLIT PANE (HORIZONTAL)
+        top_split = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=12)
+        top_split.set_size_request(-1, 320)
+
+        # TOP LEFT PANE: Local Save States
+        left_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        left_box.set_hexpand(True)
+        left_title = Gtk.Label()
+        left_title.set_markup("<b>Local Save States (On Device)</b>")
+        left_title.set_halign(Gtk.Align.START)
+        left_box.append(left_title)
+
         left_scroll = Gtk.ScrolledWindow()
         left_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-        left_scroll.set_size_request(320, -1)
-        listbox = Gtk.ListBox()
-        listbox.add_css_class('navigation-sidebar')
-        listbox.set_selection_mode(Gtk.SelectionMode.SINGLE)
-        listbox.connect('row-selected', self._on_history_row_selected)
-        left_scroll.set_child(listbox)
-        self._history_listbox = listbox
+        left_scroll.set_vexpand(True)
+        left_scroll.add_css_class("data-table")
 
-        self._fill_history_list(saves, states)
+        self._local_history_listbox = Gtk.ListBox()
+        self._local_history_listbox.add_css_class('navigation-sidebar')
+        self._local_history_listbox.set_selection_mode(Gtk.SelectionMode.SINGLE)
+        self._local_history_listbox.connect('row-selected', self._on_local_row_selected)
+        left_scroll.set_child(self._local_history_listbox)
+        left_box.append(left_scroll)
 
-        # RIGHT: preview pane
-        right = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
-        right.set_margin_top(12); right.set_margin_bottom(12)
-        right.set_margin_start(12); right.set_margin_end(12)
-        right.set_hexpand(True)
+        # TOP RIGHT PANE: Server Save States (RomM)
+        right_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        right_box.set_hexpand(True)
+        right_title = Gtk.Label()
+        right_title.set_markup("<b>Server Save States (RomM)</b>")
+        right_title.set_halign(Gtk.Align.START)
+        right_box.append(right_title)
+
+        right_scroll = Gtk.ScrolledWindow()
+        right_scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        right_scroll.set_vexpand(True)
+        right_scroll.add_css_class("data-table")
+
+        self._server_history_listbox = Gtk.ListBox()
+        self._server_history_listbox.add_css_class('navigation-sidebar')
+        self._server_history_listbox.set_selection_mode(Gtk.SelectionMode.SINGLE)
+        self._server_history_listbox.connect('row-selected', self._on_server_row_selected)
+        right_scroll.set_child(self._server_history_listbox)
+        right_box.append(right_scroll)
+
+        top_split.append(left_box)
+        top_split.append(Gtk.Separator(orientation=Gtk.Orientation.VERTICAL))
+        top_split.append(right_box)
+        main_vbox.append(top_split)
+
+        main_vbox.append(Gtk.Separator(orientation=Gtk.Orientation.HORIZONTAL))
+
+        # BOTTOM CENTER PANE: Screenshot Preview
+        bottom_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        bottom_box.set_vexpand(True)
+
+        bottom_title = Gtk.Label()
+        bottom_title.set_markup("<b>Save State Screenshot Preview</b>")
+        bottom_title.set_halign(Gtk.Align.CENTER)
+        bottom_box.append(bottom_title)
 
         self._preview_picture = Gtk.Picture()
-        self._preview_picture.set_vexpand(True)
-        self._preview_picture.set_size_request(360, 260)
+        self._preview_picture.set_size_request(340, 200)
+        self._preview_picture.set_halign(Gtk.Align.CENTER)
         if hasattr(self._preview_picture, 'set_content_fit') and hasattr(Gtk, 'ContentFit'):
             self._preview_picture.set_content_fit(Gtk.ContentFit.CONTAIN)
-        # Status text (Loading…/No screenshot/…) sits centered inside the preview area
-        self._preview_status = Gtk.Label(label="Select a version to preview")
+
+        self._preview_status = Gtk.Label(label="Select a local or server save state above to view preview")
         self._preview_status.add_css_class('dim-label')
         self._preview_status.set_wrap(True)
         self._preview_status.set_justify(Gtk.Justification.CENTER)
         self._preview_status.set_halign(Gtk.Align.CENTER)
         self._preview_status.set_valign(Gtk.Align.CENTER)
-        self._preview_status.set_margin_start(12)
-        self._preview_status.set_margin_end(12)
+
         preview_overlay = Gtk.Overlay()
-        preview_overlay.set_vexpand(True)
         preview_overlay.set_child(self._preview_picture)
         preview_overlay.add_overlay(self._preview_status)
+        preview_overlay.set_halign(Gtk.Align.CENTER)
+
         pic_frame = Gtk.Frame()
         pic_frame.set_child(preview_overlay)
-        right.append(pic_frame)
+        pic_frame.set_halign(Gtk.Align.CENTER)
+        bottom_box.append(pic_frame)
 
-        self._preview_info = Gtk.Label()
-        self._preview_info.set_xalign(0)
+        self._preview_info = Gtk.Label(label="")
+        self._preview_info.set_halign(Gtk.Align.CENTER)
         self._preview_info.set_wrap(True)
-        right.append(self._preview_info)
+        bottom_box.append(self._preview_info)
 
-        btn_row = Gtk.Box(spacing=8)
-        btn_row.set_halign(Gtk.Align.END)
-        self._copy_btn = Gtk.Button(label="As copy")
-        self._copy_btn.set_tooltip_text("Restore into a free slot without overwriting")
-        self._copy_btn.set_sensitive(False)
-        self._copy_btn.connect('clicked', lambda b: self._current_entry and self._confirm_restore(
-            win, game, self._current_entry, self._current_type, True))
-        self._restore_btn = Gtk.Button(label="Restore")
-        self._restore_btn.add_css_class('suggested-action')
-        self._restore_btn.set_sensitive(False)
-        self._restore_btn.connect('clicked', lambda b: self._current_entry and self._confirm_restore(
-            win, game, self._current_entry, self._current_type, False))
-        btn_row.append(self._copy_btn)
-        btn_row.append(self._restore_btn)
-        right.append(btn_row)
-
-        content.append(left_scroll)
-        content.append(Gtk.Separator(orientation=Gtk.Orientation.VERTICAL))
-        content.append(right)
-
-        if not saves and not states:
-            self._preview_status.set_text("This game has no saves or states on the server.")
-
-        toolbar_view.set_content(content)
+        main_vbox.append(bottom_box)
+        toolbar_view.set_content(main_vbox)
         win.set_content(toolbar_view)
+
+        # Initial population
+        local_states = self._fetch_local_save_states(game)
+        self._cross_reference_synced_states(local_states, states)
+        self._fill_local_history_list(local_states)
+        self._fill_server_history_list(saves, states)
+
         win.present()
         self._select_first_history_row()
 
-    def _fill_history_list(self, saves, states):
-        """(Re)populate the version list box, grouped by type → slot, newest first."""
-        listbox = self._history_listbox
-        # Clear any existing rows
+    def _fill_local_history_list(self, local_states):
+        """Populate Top Left pane with local save state rows."""
+        listbox = getattr(self, '_local_history_listbox', None)
+        if listbox is None:
+            return
         child = listbox.get_first_child()
         while child is not None:
             nxt = child.get_next_sibling()
             listbox.remove(child)
             child = nxt
 
-        def add_section(label, entries, save_type):
-            groups = {}
-            for e in entries:
-                if not isinstance(e, dict):
-                    continue
-                slot = e.get('slot') or RomMClient.get_slot_info(e.get('file_name', ''))[0] or 'default'
-                groups.setdefault(slot, []).append(e)
-            for slot in sorted(groups):
-                items = sorted(groups[slot],
-                               key=lambda x: x.get('updated_at') or x.get('created_at') or '',
-                               reverse=True)
-                header = Gtk.ListBoxRow()
-                header.set_selectable(False)
-                header.set_activatable(False)
-                hl = Gtk.Label()
-                hl.set_xalign(0)
-                hl.set_markup(f"<b>{GLib.markup_escape_text(f'{label} — Slot: {slot}')}</b>")
-                hl.set_margin_top(8); hl.set_margin_bottom(2)
-                hl.set_margin_start(8); hl.set_margin_end(8)
-                header.set_child(hl)
-                listbox.append(header)
-                for idx, e in enumerate(items):
-                    row = Gtk.ListBoxRow()
-                    row._entry = e
-                    row._save_type = save_type
-                    rb = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1)
-                    rb.set_margin_top(6); rb.set_margin_bottom(6)
-                    rb.set_margin_start(10); rb.set_margin_end(10)
-                    ts = self._fmt_ts(e.get('updated_at') or e.get('created_at') or '')
-                    t = Gtk.Label()
-                    t.set_xalign(0)
-                    t.set_markup(f"{GLib.markup_escape_text(ts)}" +
-                                 ("  <small>• Current</small>" if idx == 0 else ""))
-                    rb.append(t)
-                    sub = []
-                    sz = e.get('size_bytes') or e.get('file_size_bytes')
-                    if sz:
-                        sub.append(self._fmt_size(sz))
-                    dev = self._entry_device(e)
-                    if dev:
-                        sub.append(dev)
-                    if sub:
-                        s = Gtk.Label()
-                        s.set_xalign(0)
-                        s.add_css_class('dim-label')
-                        s.set_markup(f"<small>{GLib.markup_escape_text(' · '.join(sub))}</small>")
-                        rb.append(s)
-                    row.set_child(rb)
-                    listbox.append(row)
-
-        add_section("State", states, 'states')
-        add_section("Save", saves, 'saves')
-        self._known_ids = {e.get('id') for e in (list(saves) + list(states))
-                           if isinstance(e, dict) and e.get('id') is not None}
-
-    def _set_refresh_btn_state(self, state):
-        """Morph the header refresh button by flipping the indicator Stack page:
-        'idle' (refresh icon) | 'busy' (spinner) | 'done' (green ✓). The Stack is
-        homogeneous so the button keeps a constant size in every state."""
-        btn = getattr(self, '_history_refresh_btn', None)
-        stack = getattr(self, '_rb_stack', None)
-        if btn is None or stack is None:
+        if not local_states:
+            row = Gtk.ListBoxRow()
+            row.set_selectable(False)
+            row.set_activatable(False)
+            lbl = Gtk.Label(label="No local save states found on device")
+            lbl.add_css_class('dim-label')
+            lbl.set_margin_top(12); lbl.set_margin_bottom(12)
+            row.set_child(lbl)
+            listbox.append(row)
             return
-        btn.set_opacity(1)
-        sp = getattr(self, '_rb_spinner', None)
-        if state == 'busy':
-            if sp is not None:
-                sp.start()
-            stack.set_visible_child_name('busy')
-            btn.set_sensitive(False)
-        elif state == 'done':
-            if sp is not None:
-                sp.stop()
-            stack.set_visible_child_name('done')
-            btn.set_sensitive(False)
-        else:  # idle
-            if sp is not None:
-                sp.stop()
-            stack.set_visible_child_name('idle')
-            btn.set_sensitive(True)
 
-    def _set_history_busy(self, busy, text=""):
-        if busy:
-            self._history_fade_token = None  # cancel any in-flight success fade
-            self._set_refresh_btn_state('busy')
-            lb = getattr(self, '_history_busy_label', None)
-            if lb is not None:
-                lb.set_opacity(1)
-                lb.set_text(text)
-                lb.set_visible(bool(text))
-        else:
-            self._set_refresh_btn_state('idle')
-            lb = getattr(self, '_history_busy_label', None)
-            if lb is not None:
-                lb.set_visible(False)
-        for attr in ('_restore_btn', '_copy_btn'):
-            b = getattr(self, attr, None)
-            if b is not None:
-                b.set_sensitive(not busy)
-        return False
+        for loc in local_states:
+            row = Gtk.ListBoxRow()
+            row._entry = loc
+            row._source = 'local'
 
-    def _history_done(self, text="Up to date"):
-        """Turn the refresh button into a ✓ with a message, then fade back to idle."""
-        win = getattr(self, '_history_win', None)
-        if win is None or not win.get_visible():
-            return
-        self._set_refresh_btn_state('done')
-        lb = getattr(self, '_history_busy_label', None)
-        if lb is not None:
-            lb.set_opacity(1)
-            lb.set_text(text)
-            lb.set_visible(bool(text))
-        token = object()
-        self._history_fade_token = token
-        GLib.timeout_add(1600, lambda: self._history_fade_step(token, 1.0))
+            hb = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+            hb.set_margin_top(6); hb.set_margin_bottom(6)
+            hb.set_margin_start(8); hb.set_margin_end(8)
 
-    def _history_fade_step(self, token, opacity):
-        if getattr(self, '_history_fade_token', None) is not token:
-            return False  # superseded by a newer operation
-        win = getattr(self, '_history_win', None)
-        btn = getattr(self, '_history_refresh_btn', None)
-        lb = getattr(self, '_history_busy_label', None)
-        if win is None or not win.get_visible() or btn is None:
-            return False
-        opacity -= 0.08
-        if opacity <= 0:
-            if lb is not None:
-                lb.set_visible(False)
-                lb.set_opacity(1)
-            self._history_fade_token = None
-            self._set_refresh_btn_state('idle')  # revert ✓ → refresh icon
-            return False
-        btn.set_opacity(opacity)
-        if lb is not None:
-            lb.set_opacity(opacity)
-        GLib.timeout_add(40, lambda: self._history_fade_step(token, opacity))
-        return False
+            # Left Synced circular icon
+            dot = Gtk.Label()
+            if loc.get('is_synced'):
+                dot.set_markup('<span foreground="#4ade80">●</span>')
+                dot.set_tooltip_text("Synced with RomM server")
+            else:
+                dot.set_markup('<span foreground="#6b7280">○</span>')
+                dot.set_tooltip_text("Local only (not on server)")
+            hb.append(dot)
 
-    def _finish_refresh(self, saves, states, done_text="Up to date"):
-        win = getattr(self, '_history_win', None)
-        if win is None or not win.get_visible():
-            return False
-        # Keep _shot_cache (keyed by stable version id) and re-select the same
-        # version so the preview doesn't blank→reload (flicker) on refresh.
-        prev_id = self._current_entry.get('id') if getattr(self, '_current_entry', None) else None
-        self._current_entry = None
-        self._fill_history_list(saves, states)
-        self._set_history_busy(False)
-        if not self._select_history_row_by_id(prev_id):
-            self._select_first_history_row()
-        self._history_done(done_text)
-        return False
+            # Center text info
+            vb = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1)
+            vb.set_hexpand(True)
+            t = Gtk.Label()
+            t.set_xalign(0)
+            t.set_markup(f"<b>{GLib.markup_escape_text(loc.get('slot_name', 'Slot'))}</b> — {GLib.markup_escape_text(loc.get('timestamp', ''))}")
+            vb.append(t)
 
-    def _select_history_row_by_id(self, entry_id):
-        if entry_id is None:
-            return False
-        listbox = getattr(self, '_history_listbox', None)
+            sz_str = self._fmt_size(loc.get('size_bytes', 0))
+            s = Gtk.Label()
+            s.set_xalign(0)
+            s.add_css_class('dim-label')
+            s.set_markup(f"<small>{GLib.markup_escape_text(sz_str)} · {GLib.markup_escape_text(loc.get('file_name', ''))}</small>")
+            vb.append(s)
+            hb.append(vb)
+
+            # Right Upload Button
+            upload_btn = Gtk.Button.new_from_icon_name("folder-upload-symbolic")
+            upload_btn.set_tooltip_text("Upload to RomM Server")
+            upload_btn.add_css_class("flat")
+            upload_btn.connect('clicked', lambda b, entry=loc: self._upload_local_state(entry))
+            hb.append(upload_btn)
+
+            row.set_child(hb)
+            listbox.append(row)
+
+    def _fill_server_history_list(self, saves, states):
+        """Populate Top Right pane with server save state rows."""
+        listbox = getattr(self, '_server_history_listbox', None)
         if listbox is None:
-            return False
+            return
         child = listbox.get_first_child()
         while child is not None:
-            e = getattr(child, '_entry', None)
-            if e is not None and e.get('id') == entry_id:
-                listbox.select_row(child)
-                return True
-            child = child.get_next_sibling()
-        return False
+            nxt = child.get_next_sibling()
+            listbox.remove(child)
+            child = nxt
+
+        server_entries = [e for e in (list(states) + list(saves)) if isinstance(e, dict)]
+        server_entries.sort(key=lambda x: x.get('updated_at') or x.get('created_at') or '', reverse=True)
+
+        if not server_entries:
+            row = Gtk.ListBoxRow()
+            row.set_selectable(False)
+            row.set_activatable(False)
+            lbl = Gtk.Label(label="No save states found on RomM server")
+            lbl.add_css_class('dim-label')
+            lbl.set_margin_top(12); lbl.set_margin_bottom(12)
+            row.set_child(lbl)
+            listbox.append(row)
+            return
+
+        for e in server_entries:
+            row = Gtk.ListBoxRow()
+            row._entry = e
+            row._source = 'server'
+
+            hb = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+            hb.set_margin_top(6); hb.set_margin_bottom(6)
+            hb.set_margin_start(8); hb.set_margin_end(8)
+
+            # Left Info
+            vb = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=1)
+            vb.set_hexpand(True)
+            ts = self._fmt_ts(e.get('updated_at') or e.get('created_at') or '')
+            t = Gtk.Label()
+            t.set_xalign(0)
+            t.set_markup(f"<b>{GLib.markup_escape_text(ts)}</b>")
+            vb.append(t)
+
+            sub = []
+            sz = e.get('size_bytes') or e.get('file_size_bytes')
+            if sz:
+                sub.append(self._fmt_size(sz))
+            dev = self._entry_device(e)
+            if dev:
+                sub.append(dev)
+            slot = e.get('slot')
+            if slot:
+                sub.append(f"Slot {slot}")
+
+            s = Gtk.Label()
+            s.set_xalign(0)
+            s.add_css_class('dim-label')
+            s.set_markup(f"<small>{GLib.markup_escape_text(' · '.join(sub))}</small>")
+            vb.append(s)
+            hb.append(vb)
+
+            # Right Restore to Slot Popover / Button
+            popover = Gtk.Popover()
+            p_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+            p_box.set_margin_top(6); p_box.set_margin_bottom(6)
+            p_box.set_margin_start(6); p_box.set_margin_end(6)
+
+            p_title = Gtk.Label()
+            p_title.set_markup("<b>Select target slot to restore to:</b>")
+            p_title.set_margin_bottom(4)
+            p_box.append(p_title)
+
+            slots_options = [
+                ("Slot 0 (Default)", ".state"),
+                ("Slot 1", ".state1"),
+                ("Slot 2", ".state2"),
+                ("Slot 3", ".state3"),
+                ("Slot 4", ".state4"),
+                ("Slot 5", ".state5"),
+                ("Quicksave", ".state.qsv"),
+                ("Auto Save", ".state.auto"),
+            ]
+
+            for opt_label, opt_code in slots_options:
+                b = Gtk.Button(label=opt_label)
+                b.add_css_class("flat")
+                b.connect('clicked', lambda btn, entry=e, code=opt_code, pop=popover: (pop.popdown(), self._restore_server_state_to_slot(entry, code)))
+                p_box.append(b)
+
+            popover.set_child(p_box)
+
+            menu_btn = Gtk.MenuButton()
+            menu_btn.set_label("Restore to Slot ▾")
+            menu_btn.set_popover(popover)
+            hb.append(menu_btn)
+
+            row.set_child(hb)
+            listbox.append(row)
+
+    def _on_local_row_selected(self, listbox, row):
+        if row is None or not hasattr(row, '_entry'):
+            return
+        server_lb = getattr(self, '_server_history_listbox', None)
+        if server_lb and server_lb.get_selected_row():
+            server_lb.unselect_all()
+        self._update_preview(row._entry, 'local')
+
+    def _on_server_row_selected(self, listbox, row):
+        if row is None or not hasattr(row, '_entry'):
+            return
+        local_lb = getattr(self, '_local_history_listbox', None)
+        if local_lb and local_lb.get_selected_row():
+            local_lb.unselect_all()
+        self._update_preview(row._entry, 'server')
+
+    def _update_preview(self, entry, source):
+        self._current_entry = entry
+        self._current_source = source
+        if not entry:
+            self._preview_picture.set_paintable(None)
+            self._preview_status.set_text("Select a save state above to view preview")
+            self._preview_status.set_visible(True)
+            self._preview_info.set_text("")
+            return
+
+        if source == 'local':
+            ts = entry.get('timestamp', '')
+            slot_name = entry.get('slot_name', 'Local Save State')
+            sz = self._fmt_size(entry.get('size_bytes', 0))
+            is_synced = entry.get('is_synced', False)
+            synced_str = "Synced with server" if is_synced else "Local only"
+            self._preview_info.set_markup(f"<b>{GLib.markup_escape_text(slot_name)}</b> — {GLib.markup_escape_text(ts)} ({GLib.markup_escape_text(sz)}) · <i>{GLib.markup_escape_text(synced_str)}</i>")
+
+            png_path = entry.get('png_path')
+            if png_path and Path(png_path).exists():
+                try:
+                    from gi.repository import Gdk
+                    tex = Gdk.Texture.new_from_filename(png_path)
+                    self._preview_picture.set_paintable(tex)
+                    self._preview_status.set_visible(False)
+                    return
+                except Exception:
+                    pass
+            self._preview_picture.set_paintable(None)
+            self._preview_status.set_text("No screenshot preview available for this local state")
+            self._preview_status.set_visible(True)
+
+        elif source == 'server':
+            ts = self._fmt_ts(entry.get('updated_at') or entry.get('created_at') or '')
+            sz = self._fmt_size(entry.get('size_bytes') or entry.get('file_size_bytes') or 0)
+            dev = self._entry_device(entry) or "RomM Server"
+            self._preview_info.set_markup(f"<b>RomM Server Save</b> — {GLib.markup_escape_text(ts)} ({GLib.markup_escape_text(sz)}) · {GLib.markup_escape_text(dev)}")
+
+            sid = entry.get('id')
+            if sid in self._shot_cache:
+                tex = self._shot_cache[sid]
+                self._preview_picture.set_paintable(tex)
+                self._preview_status.set_visible(tex is None)
+                if tex is None:
+                    self._preview_status.set_text("No screenshot available for this server version")
+                return
+
+            self._preview_picture.set_paintable(None)
+            self._preview_status.set_visible(True)
+            self._preview_status.set_text("Loading screenshot…")
+
+            def worker():
+                data = self._fetch_screenshot_bytes(entry, 'states')
+                GLib.idle_add(self._apply_screenshot, sid, data)
+            threading.Thread(target=worker, daemon=True).start()
+
+    def _upload_local_state(self, local_entry):
+        """Upload a specific local save state file to the RomM server."""
+        game = getattr(self, '_history_game', None)
+        if not game or not local_entry:
+            return
+
+        file_path = local_entry.get('file_path')
+        if not file_path or not Path(file_path).exists():
+            return
+
+        self._set_history_busy(True, "Uploading to server…")
+
+        def worker():
+            try:
+                rom_id = getattr(self, '_history_rom_id', None)
+                thumbnail_path = self.parent.retroarch.find_thumbnail_for_save_state(file_path) if hasattr(self.parent.retroarch, 'find_thumbnail_for_save_state') else None
+                slot, autocleanup, autocleanup_limit = RomMClient.get_slot_info(file_path)
+
+                result = self.parent.romm_client.upload_save_with_thumbnail(
+                    rom_id, 'states', file_path, thumbnail_path, None, self.parent.device_id,
+                    slot=slot, autocleanup=autocleanup, autocleanup_limit=autocleanup_limit
+                )
+
+                if result:
+                    GLib.idle_add(self.parent.log_message, f"✅ Uploaded {local_entry.get('slot_name')} to server")
+                else:
+                    GLib.idle_add(self.parent.log_message, f"⚠️ Upload of {local_entry.get('slot_name')} failed")
+
+            except Exception as e:
+                GLib.idle_add(self.parent.log_message, f"❌ Save state upload failed: {e}")
+
+            GLib.idle_add(self._refresh_history)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _restore_server_state_to_slot(self, server_entry, target_slot_code):
+        """Download & restore a server save state directly to a specific local slot."""
+        game = getattr(self, '_history_game', None)
+        if not game or not server_entry:
+            return
+
+        self._set_history_busy(True, f"Restoring into {target_slot_code}…")
+
+        def worker():
+            try:
+                import shutil
+                save_id = server_entry.get('id')
+                data = self.parent.romm_client.download_save_file(save_id) if hasattr(self.parent.romm_client, 'download_save_file') else None
+                if not data:
+                    GLib.idle_add(self.parent.log_message, "❌ Failed to download save state from server")
+                    GLib.idle_add(self._set_history_busy, False)
+                    return
+
+                save_dirs = getattr(self.parent.retroarch, 'save_dirs', {}) or {}
+                states_dir = save_dirs.get('states')
+                if not states_dir:
+                    dirs = self.parent.retroarch.find_retroarch_dirs()
+                    states_dir = dirs.get('states')
+
+                if not states_dir:
+                    GLib.idle_add(self.parent.log_message, "❌ Local states directory not found")
+                    GLib.idle_add(self._set_history_busy, False)
+                    return
+
+                platform_name = game.get('platform', '')
+                game_name = game.get('name', '')
+                file_name = game.get('file_name', '')
+                stem = Path(file_name).stem if file_name else game_name
+
+                target_dir = Path(states_dir)
+                if platform_name and (target_dir / platform_name).exists():
+                    target_dir = target_dir / platform_name
+
+                target_dir.mkdir(parents=True, exist_ok=True)
+                target_path = target_dir / f"{stem}{target_slot_code}"
+
+                if target_path.exists():
+                    backup_path = target_path.with_suffix(target_path.suffix + '.backup')
+                    shutil.copy2(target_path, backup_path)
+
+                target_path.write_bytes(data)
+
+                # Fetch screenshot
+                shot_bytes = self.parent.romm_client.fetch_screenshot_bytes(server_entry, 'states')
+                if shot_bytes:
+                    png_path = target_path.with_name(target_path.name + '.png')
+                    png_path.write_bytes(shot_bytes)
+
+                GLib.idle_add(self.parent.log_message, f"✅ Restored save state into {target_path.name}")
+
+            except Exception as e:
+                GLib.idle_add(self.parent.log_message, f"❌ Save state restore failed: {e}")
+
+            GLib.idle_add(self._refresh_history)
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def _select_first_history_row(self):
-        listbox = getattr(self, '_history_listbox', None)
-        if listbox is None:
-            return
-        child = listbox.get_first_child()
-        while child is not None:
+        local_lb = getattr(self, '_local_history_listbox', None)
+        if local_lb and local_lb.get_first_child():
+            child = local_lb.get_first_child()
             if hasattr(child, '_entry'):
-                listbox.select_row(child)
+                local_lb.select_row(child)
                 return
-            child = child.get_next_sibling()
+        server_lb = getattr(self, '_server_history_listbox', None)
+        if server_lb and server_lb.get_first_child():
+            child = server_lb.get_first_child()
+            if hasattr(child, '_entry'):
+                server_lb.select_row(child)
 
     def _refresh_history(self):
-        """Re-fetch the version list from the server and repopulate the open dialog."""
+        """Re-fetch both server and local save states and repopulate open dialog."""
         rom_id = getattr(self, '_history_rom_id', None)
+        game = getattr(self, '_history_game', None)
         win = getattr(self, '_history_win', None)
-        if not rom_id or not getattr(self, '_history_listbox', None):
+        if not rom_id or win is None or not win.get_visible():
             return
-        if win is None or not win.get_visible():
-            return  # dialog was closed; nothing to refresh
+
         self._set_history_busy(True, "Refreshing…")
 
         def worker():
             saves, states = self._fetch_save_history(rom_id)
-            GLib.idle_add(self._finish_refresh, saves, states)
+            local_states = self._fetch_local_save_states(game)
+            self._cross_reference_synced_states(local_states, states)
+            GLib.idle_add(self._finish_refresh_all, local_states, saves, states)
+
         threading.Thread(target=worker, daemon=True).start()
 
-    def _await_restore_sync(self, baseline_ids):
-        """Poll the server until the restore's re-uploaded version appears, then
-        refresh the open dialog. Timing is derived from the auto-sync upload
-        debounce (no magic numbers): the watcher waits upload_delay seconds of
-        file stability before uploading, so there's no point polling before then.
-        We wait that long, then poll on a 1s cadence (matching the upload worker's
-        own tick) until the new version id shows up, with a bounded timeout."""
-        import time
-        rom_id = getattr(self, '_history_rom_id', None)
-        if not rom_id:
-            GLib.idle_add(self._set_history_busy, False)
-            return
-        baseline = set(baseline_ids or set())
-        auto_sync = getattr(self.parent, 'auto_sync', None)
-        upload_delay = getattr(auto_sync, 'upload_delay', 3)
-        # Initial wait until the upload could have started (debounce + small buffer),
-        # then poll every second up to a generous ceiling for slow networks.
-        time.sleep(upload_delay + 0.5)
-        deadline = time.time() + 20
-        while True:
-            win = getattr(self, '_history_win', None)
-            if win is None or not win.get_visible():
-                return  # dialog closed; stop polling
-            saves, states = self._fetch_save_history(rom_id)
-            ids = {e.get('id') for e in (saves + states)
-                   if isinstance(e, dict) and e.get('id') is not None}
-            if ids - baseline:
-                GLib.idle_add(self._finish_refresh, saves, states, "Restore complete")
-                return
-            if time.time() >= deadline:
-                GLib.idle_add(self._finish_refresh, saves, states, "Restored (sync pending)")
-                return
-            time.sleep(1.0)
-
-    def _on_history_row_selected(self, listbox, row):
-        if row is None or not hasattr(row, '_entry'):
-            return
-        self._set_history_preview(row._entry, row._save_type)
-
-    def _set_history_preview(self, entry, save_type):
-        self._current_entry = entry
-        self._current_type = save_type
-        self._restore_btn.set_sensitive(True)
-        self._copy_btn.set_visible(save_type == 'states')
-        self._copy_btn.set_sensitive(save_type == 'states')
-
-        ts = self._fmt_ts(entry.get('updated_at') or entry.get('created_at') or '')
-        info = [f"<b>{GLib.markup_escape_text(ts)}</b>"]
-        fn = entry.get('file_name')
-        if fn:
-            info.append(f"<small>{GLib.markup_escape_text(fn)}</small>")
-        self._preview_info.set_markup("\n".join(info))
-
-        sid = entry.get('id')
-        if save_type != 'states':
-            self._preview_picture.set_paintable(None)
-            self._preview_status.set_text("Battery saves have no screenshot")
-            self._preview_status.set_visible(True)
-            return
-        if sid in self._shot_cache:
-            tex = self._shot_cache[sid]
-            self._preview_picture.set_paintable(tex)
-            self._preview_status.set_visible(tex is None)
-            if tex is None:
-                self._preview_status.set_text("No screenshot for this version")
-            return
-        self._preview_picture.set_paintable(None)
-        self._preview_status.set_visible(True)
-        self._preview_status.set_text("Loading screenshot…")
-
-        def worker():
-            data = self._fetch_screenshot_bytes(entry, save_type)
-            GLib.idle_add(self._apply_screenshot, sid, data)
-        threading.Thread(target=worker, daemon=True).start()
-
-    def _fetch_screenshot_bytes(self, entry, save_type):
-        """Return screenshot image bytes for a save/state entry (delegates)."""
-        return self.parent.romm_client.fetch_screenshot_bytes(entry, save_type)
-
-    def _apply_screenshot(self, sid, data):
-        from gi.repository import Gdk
-        tex = None
-        if data:
-            try:
-                # new_from_bytes decodes PNG/JPEG directly (GTK 4.6+)
-                tex = Gdk.Texture.new_from_bytes(GLib.Bytes.new(data))
-            except Exception:
-                # Fallback for older GTK or unusual image formats
-                try:
-                    from gi.repository import GdkPixbuf
-                    loader = GdkPixbuf.PixbufLoader()
-                    loader.write(data)
-                    loader.close()
-                    pixbuf = loader.get_pixbuf()
-                    if pixbuf is not None:
-                        tex = Gdk.Texture.new_for_pixbuf(pixbuf)
-                except Exception as e:
-                    logging.debug(f"Screenshot decode failed: {e}")
-        self._shot_cache[sid] = tex
-        if self._current_entry and self._current_entry.get('id') == sid:
-            self._preview_picture.set_paintable(tex)
-            if tex is None:
-                self._preview_status.set_text("No screenshot for this version")
-                self._preview_status.set_visible(True)
-            else:
-                self._preview_status.set_visible(False)
+    def _finish_refresh_all(self, local_states, saves, states, done_text="Up to date"):
+        win = getattr(self, '_history_win', None)
+        if win is None or not win.get_visible():
+            return False
+        self._fill_local_history_list(local_states)
+        self._fill_server_history_list(saves, states)
+        self._set_history_busy(False)
+        self._history_done(done_text)
         return False
-
-    def _slot_label_for(self, tgt_name):
-        import re
-        if not tgt_name:
-            return "a new slot"
-        m = re.search(r'\.state(\d+)$', tgt_name)
-        if m:
-            return f"slot {m.group(1)}"
-        if tgt_name.lower().endswith('.state.auto'):
-            return "the auto slot"
-        if tgt_name.endswith('.state'):
-            return "the quicksave slot"
-        return "a new slot"
-
-    def _confirm_restore(self, parent_win, game, entry, save_type, as_copy):
-        kind = save_type[:-1]
-        ts = self._fmt_ts(entry.get('updated_at') or entry.get('created_at') or '')
-        if as_copy:
-            _, tgt_name = self._resolve_restore_dest(game, entry, save_type, True)
-            where = f"{self._slot_label_for(tgt_name)} ({tgt_name})" if tgt_name else "a new free slot"
-            title = "Restore as copy?"
-            body = (f"Download this {kind} version ({ts}) into {where}. "
-                    f"Your current slots are left untouched.")
-            label, destructive = "Restore as copy", False
-        else:
-            title = "Restore this version?"
-            body = (f"Overwrite the current {kind} with the version from {ts}. "
-                    f"The current file is backed up alongside it (.backup).")
-            label, destructive = "Restore", True
-        dlg = Adw.AlertDialog.new(title, body)
-        dlg.add_response("cancel", "Cancel")
-        dlg.add_response("ok", label)
-        dlg.set_response_appearance(
-            "ok", Adw.ResponseAppearance.DESTRUCTIVE if destructive else Adw.ResponseAppearance.SUGGESTED)
-
-        def on_resp(d, r):
-            if r == "ok":
-                self._set_history_busy(True, "Restoring…")
-                baseline = set(getattr(self, '_known_ids', set()))
-                threading.Thread(target=self._restore_version,
-                                 args=(game, entry, save_type, as_copy, baseline),
-                                 daemon=True).start()
-        dlg.connect('response', on_resp)
-        dlg.present(parent_win)
-
-    def _resolve_restore_dest(self, game, entry, save_type, as_copy=False):
-        """Resolve the local destination (dir, filename) for a restored version."""
-        return self.parent.retroarch.resolve_restore_dest(game, entry, save_type, as_copy)
-
-    def _restore_version(self, game, entry, save_type, as_copy=False, baseline_ids=None):
-        result = self.parent.retroarch.restore_save_version(
-            self.parent.romm_client, game, entry, save_type, as_copy,
-            log=lambda m: GLib.idle_add(self.parent.log_message, m))
-        if result.get('success'):
-            # Reflect the new version (created by the auto-upload) in an open browser:
-            # show a spinner and poll until the upload actually lands (adaptive),
-            # rather than guessing a fixed delay.
-            GLib.idle_add(self._set_history_busy, True, "Syncing to server…")
-            self._await_restore_sync(baseline_ids)
-        else:
-            GLib.idle_add(self.parent.log_message, f"❌ {result.get('error')}")
-            GLib.idle_add(self._set_history_busy, False)
 
     def auto_expand_platforms_with_results(self, filtered_games):
         """Automatically expand platforms that contain search results"""
