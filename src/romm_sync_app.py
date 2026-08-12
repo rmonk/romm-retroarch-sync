@@ -3531,53 +3531,105 @@ class EnhancedLibrarySection:
         return None
 
     def _get_target_state_directory(self, states_path, game):
-        """Find the exact state directory used by RetroArch for this game.
-        Handles case-insensitivity and core directory structures (e.g. Snes9x, snes9x, Super Nintendo Entertainment System).
+        """Find the exact state directory used by RetroArch for this game/core.
+        Handles case-insensitivity, RetroArch core directory maps (e.g. Snes9x, mGBA, Beetle PSX HW),
+        and prevents fallback to 'Unknown'.
         """
         states_path = Path(states_path)
         if not states_path.exists():
-            return states_path
+            states_path.mkdir(parents=True, exist_ok=True)
 
-        platform_name = game.get('platform', '')
-        platform_slug = game.get('platform_slug', '')
+        # 1. Safely extract platform_name and platform_slug from game dictionary
+        platform_val = game.get('platform')
+        if isinstance(platform_val, dict):
+            platform_name = platform_val.get('name', '') or platform_val.get('slug', '')
+            platform_slug = platform_val.get('slug', '') or platform_val.get('name', '')
+        elif isinstance(platform_val, str):
+            platform_name = platform_val
+            platform_slug = game.get('platform_slug', '') or platform_val
+        else:
+            platform_name = game.get('platform_name', '') or ''
+            platform_slug = game.get('platform_slug', '') or ''
+
+        if platform_name == 'Unknown':
+            platform_name = ''
+        if platform_slug == 'Unknown':
+            platform_slug = ''
+
         game_name = game.get('name', '')
         file_name = game.get('file_name', '')
         stem = (Path(file_name).stem if file_name else game_name).lower()
 
-        # 1. Search existing subdirectories for any file matching stem + '.state'
+        # Gather existing subdirectories in states_path
+        subdirs = []
         try:
-            subdirs = [d for d in states_path.iterdir() if d.is_dir()]
-            for d in subdirs:
-                try:
-                    for f in d.iterdir():
-                        if f.is_file() and stem in f.name.lower() and '.state' in f.name.lower():
-                            return d
-                except Exception:
-                    pass
+            subdirs = [d for d in states_path.iterdir() if d.is_dir() and d.name != 'Unknown']
         except Exception:
-            subdirs = []
+            pass
 
-        # 2. Case-insensitive check for platform_name or platform_slug or core name subdirectories
-        possible_dir_names = set()
-        if platform_name:
-            possible_dir_names.add(platform_name.lower())
-        if platform_slug:
-            possible_dir_names.add(platform_slug.lower())
-
-        core_hint = self.parent.retroarch.get_core_from_platform_slug(platform_slug) if hasattr(self.parent, 'retroarch') and hasattr(self.parent.retroarch, 'get_core_from_platform_slug') else None
-        if core_hint:
-            possible_dir_names.add(core_hint.lower())
-            possible_dir_names.add(f"{core_hint.lower()}_libretro")
-
+        # 2. Check if an existing subdirectory ALREADY has save states for this game stem
         for d in subdirs:
-            if d.name.lower() in possible_dir_names:
+            try:
+                for f in d.iterdir():
+                    if f.is_file() and stem in f.name.lower() and '.state' in f.name.lower():
+                        return d
+            except Exception:
+                pass
+
+        # Also check root states_path if it has state files matching stem
+        try:
+            for f in states_path.iterdir():
+                if f.is_file() and stem in f.name.lower() and '.state' in f.name.lower():
+                    return states_path
+        except Exception:
+            pass
+
+        # 3. Gather candidate directory names from RetroArch platform/core maps
+        candidate_dir_names = []
+
+        if hasattr(self.parent, 'retroarch') and self.parent.retroarch:
+            ra = self.parent.retroarch
+
+            # Check if retroarch interface can resolve candidate cores for this platform
+            cores = []
+            if platform_slug and hasattr(ra, 'platform_core_map'):
+                cores.extend(ra.platform_core_map.get(platform_slug, []))
+            if platform_name and hasattr(ra, 'platform_core_map'):
+                cores.extend(ra.platform_core_map.get(platform_name, []))
+
+            if hasattr(ra, 'get_core_from_platform_slug') and platform_slug:
+                core_hint = ra.get_core_from_platform_slug(platform_slug)
+                if core_hint and core_hint not in cores:
+                    cores.insert(0, core_hint)
+
+            emu_map = getattr(ra, 'emulator_directory_map', {}) or {}
+            for c in cores:
+                c_clean = c.replace('_libretro', '').lower()
+                mapped_name = emu_map.get(c_clean) or emu_map.get(c)
+                if mapped_name and mapped_name not in candidate_dir_names:
+                    candidate_dir_names.append(mapped_name)
+                # Also add standard variations
+                for var in (c, c_clean, f"{c}_libretro"):
+                    if var and var not in candidate_dir_names:
+                        candidate_dir_names.append(var)
+
+        if platform_name and platform_name not in candidate_dir_names:
+            candidate_dir_names.append(platform_name)
+        if platform_slug and platform_slug not in candidate_dir_names:
+            candidate_dir_names.append(platform_slug)
+
+        # Case-insensitive check against existing subdirectories
+        candidate_lowers = {c.lower(): c for c in candidate_dir_names}
+        for d in subdirs:
+            if d.name.lower() in candidate_lowers:
                 return d
 
-        # 3. Fallback: use platform_name directory or states_path
-        if platform_name:
-            target = states_path / platform_name
-            target.mkdir(parents=True, exist_ok=True)
-            return target
+        # 4. If no existing directory matched, create the best candidate directory
+        if candidate_dir_names:
+            target_name = candidate_dir_names[0]
+            target_dir = states_path / target_name
+            target_dir.mkdir(parents=True, exist_ok=True)
+            return target_dir
 
         return states_path
 
