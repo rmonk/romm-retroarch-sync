@@ -3703,7 +3703,7 @@ class EnhancedLibrarySection:
 
         win = Adw.Window()
         self._history_win = win
-        win.set_title(f"Save History — {name}")
+        win.set_title(f"Save State History — {name}")
         win.set_modal(True)
         win.set_transient_for(self.parent)
         win.set_default_size(920, 680)
@@ -4252,11 +4252,6 @@ class EnhancedLibrarySection:
             try:
                 import shutil
                 save_id = server_entry.get('id')
-                data = self.parent.romm_client.download_save_file(save_id) if hasattr(self.parent.romm_client, 'download_save_file') else None
-                if not data:
-                    GLib.idle_add(self.parent.log_message, "❌ Failed to download save state from server")
-                    GLib.idle_add(self._set_history_busy, False)
-                    return
 
                 save_dirs = getattr(self.parent.retroarch, 'save_dirs', {}) or {}
                 states_dir = save_dirs.get('states')
@@ -4281,7 +4276,19 @@ class EnhancedLibrarySection:
                     backup_path = target_path.with_suffix(target_path.suffix + '.backup')
                     shutil.copy2(target_path, backup_path)
 
-                target_path.write_bytes(data)
+                fallback_url = server_entry.get('download_path') or server_entry.get('path')
+                success = self.parent.romm_client.download_save_by_id(
+                    save_id=save_id,
+                    save_type='states',
+                    download_path=target_path,
+                    device_id=getattr(self.parent, 'device_id', None),
+                    fallback_url=fallback_url
+                )
+
+                if not success:
+                    GLib.idle_add(self.parent.log_message, f"❌ Failed to download save state {save_id} from server")
+                    GLib.idle_add(self._set_history_busy, False)
+                    return
 
                 # Fetch screenshot
                 shot_bytes = self.parent.romm_client.fetch_screenshot_bytes(server_entry, 'states')
