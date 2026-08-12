@@ -4740,9 +4740,10 @@ class EnhancedLibrarySection:
                 server_lb.select_row(child)
 
     def _refresh_history(self):
-        """Re-fetch both server and local save states and repopulate open dialog."""
+        """Re-fetch both server and local save history and repopulate open dialog."""
         rom_id = getattr(self, '_history_rom_id', None)
         game = getattr(self, '_history_game', None)
+        mode = getattr(self, '_history_mode', 'states')
         win = getattr(self, '_history_win', None)
         if not rom_id or win is None or not win.get_visible():
             return
@@ -4751,18 +4752,24 @@ class EnhancedLibrarySection:
 
         def worker():
             saves, states = self._fetch_save_history(rom_id)
-            local_states = self._fetch_local_save_states(game)
-            self._cross_reference_synced_states(local_states, states)
-            GLib.idle_add(self._finish_refresh_all, local_states, saves, states)
+            if mode == 'saves':
+                local_entries = self._fetch_local_save_files(game)
+                server_entries = saves
+            else:
+                local_entries = self._fetch_local_save_states(game)
+                server_entries = states
+
+            self._cross_reference_synced_states(local_entries, server_entries)
+            GLib.idle_add(self._finish_refresh_all, local_entries, saves, states, mode)
 
         threading.Thread(target=worker, daemon=True).start()
 
-    def _finish_refresh_all(self, local_states, saves, states, done_text="Up to date"):
+    def _finish_refresh_all(self, local_entries, saves, states, mode='states', done_text="Up to date"):
         win = getattr(self, '_history_win', None)
         if win is None or not win.get_visible():
             return False
-        self._fill_local_history_list(local_states)
-        self._fill_server_history_list(saves, states)
+        self._fill_local_history_list(local_entries, mode=mode)
+        self._fill_server_history_list(saves, states, mode=mode)
         self._set_history_busy(False)
         self._history_done(done_text)
         return False
