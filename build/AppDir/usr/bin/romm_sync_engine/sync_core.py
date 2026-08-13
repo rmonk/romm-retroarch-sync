@@ -271,9 +271,11 @@ class GameDataCache:
                 continue
                 
             # Platform mapping: directory name -> RomM platform name
-            platform_name = (romm_data.get('platform_name') or 
+            platform_name = (romm_data.get('platform_display_name') or 
+                            romm_data.get('platform_name') or 
                             romm_data.get('platform_slug') or 
-                            game.get('platform', 'Unknown'))
+                            (game.get('platform') if game.get('platform') and game.get('platform') != 'Unknown' else '') or
+                            'Unknown')
                 
             # Try to guess what directory name this would create
             dir_names = [
@@ -1963,7 +1965,7 @@ class RomMClient:
                         'limit': page_size,
                         'offset': current_offset,
                         'with_files': 'true',
-                        'fields': 'id,name,fs_name,platform_name,platform_slug,files,multi,path_cover_large,path_cover_small,sibling_roms,rom_user',
+                        'fields': 'id,name,fs_name,platform_name,platform_display_name,platform_slug,files,multi,path_cover_large,path_cover_small,sibling_roms,rom_user',
                         'updated_after': updated_after
                     }
                     response = self.session.get(
@@ -1994,7 +1996,7 @@ class RomMClient:
                     'limit': limit,
                     'offset': offset,
                     'with_files': 'true',
-                    'fields': 'id,name,fs_name,platform_name,platform_slug,files,multi,path_cover_large,path_cover_small,sibling_roms,rom_user'
+                    'fields': 'id,name,fs_name,platform_name,platform_display_name,platform_slug,files,multi,path_cover_large,path_cover_small,sibling_roms,rom_user'
                 }
                 if updated_after:
                     params['updated_after'] = updated_after
@@ -2041,7 +2043,7 @@ class RomMClient:
                     'search_term': term,
                     'limit': limit,
                     'with_files': 'true',
-                    'fields': 'id,name,fs_name,fs_extension,platform_name,platform_slug,files,multi,path_cover_large,path_cover_small,sibling_roms,rom_user'
+                    'fields': 'id,name,fs_name,fs_extension,platform_name,platform_display_name,platform_slug,files,multi,path_cover_large,path_cover_small,sibling_roms,rom_user'
                 },
                 timeout=30
             )
@@ -2150,7 +2152,7 @@ class RomMClient:
                     'collection_id': collection_id,
                     # RomM 4.9.0: file expansion is opt-in (with_files default False).
                     'with_files': 'true',
-                    'fields': 'id,name,fs_name,fs_extension,platform_name,platform_slug,files,multi,path_cover_large,path_cover_small,sibling_roms,rom_user'
+                    'fields': 'id,name,fs_name,fs_extension,platform_name,platform_display_name,platform_slug,files,multi,path_cover_large,path_cover_small,sibling_roms,rom_user'
                 },
                 timeout=30
             )
@@ -2181,7 +2183,7 @@ class RomMClient:
                 params={
                     'virtual_collection_id': virtual_collection_id,
                     'with_files': 'true',
-                    'fields': 'id,name,fs_name,fs_extension,platform_name,platform_slug,files,multi,path_cover_large,path_cover_small,sibling_roms,rom_user'
+                    'fields': 'id,name,fs_name,fs_extension,platform_name,platform_display_name,platform_slug,files,multi,path_cover_large,path_cover_small,sibling_roms,rom_user'
                 },
                 timeout=30
             )
@@ -2399,7 +2401,7 @@ class RomMClient:
                         'offset': offset,
                         # RomM 4.9.0: file expansion is opt-in (with_files default False).
                         'with_files': 'true',
-                        'fields': 'id,name,fs_name,fs_extension,platform_name,platform_slug,files,multi,path_cover_large,path_cover_small,sibling_roms,rom_user'
+                        'fields': 'id,name,fs_name,fs_extension,platform_name,platform_display_name,platform_slug,files,multi,path_cover_large,path_cover_small,sibling_roms,rom_user'
                     },
                     timeout=60
                 )

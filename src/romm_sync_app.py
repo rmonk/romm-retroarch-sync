@@ -9248,13 +9248,33 @@ class SyncWindow(Gtk.ApplicationWindow):
     def process_single_rom(self, rom, download_dir):
         """Process a single ROM with short directory names but full display names"""
         rom_id = rom.get('id')
-        platform_display_name = rom.get('platform_name', 'Unknown')  # Full name for tree view
-        platform_slug = rom.get('platform_slug', platform_display_name)  # Short name for directories
+        
+        # Safely extract display name from platform_display_name, platform_name, platform_custom_name, or platform object
+        platform_obj = rom.get('platform')
+        platform_obj_name = platform_obj.get('name') if isinstance(platform_obj, dict) else (platform_obj if isinstance(platform_obj, str) else None)
+        platform_obj_slug = platform_obj.get('slug') if isinstance(platform_obj, dict) else None
 
-        # If platform_name is missing but we have platform_slug, look it up in the platform mapping
-        if platform_display_name == 'Unknown' and platform_slug and platform_slug != 'Unknown':
+        platform_display_name = (
+            rom.get('platform_display_name') or
+            rom.get('platform_name') or
+            rom.get('platform_custom_name') or
+            platform_obj_name or
+            'Unknown'
+        )
+        platform_slug = (
+            rom.get('platform_slug') or
+            rom.get('platform_fs_slug') or
+            platform_obj_slug or
+            (platform_display_name if platform_display_name != 'Unknown' else '')
+        )
+
+        # If platform_display_name is missing or 'Unknown' but we have platform_slug, look it up in the platform mapping
+        if (not platform_display_name or platform_display_name == 'Unknown') and platform_slug and platform_slug != 'Unknown':
             if hasattr(self, 'game_cache') and self.game_cache.platform_mapping:
                 platform_display_name = self.game_cache.get_platform_name(platform_slug)
+        
+        if not platform_display_name:
+            platform_display_name = 'Unknown'
         # Clean up platform slug - prefer "megadrive" over "genesis"
         if 'genesis' in platform_slug.lower() and 'megadrive' in platform_slug.lower():
             platform_slug = 'megadrive'
