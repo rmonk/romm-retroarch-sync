@@ -312,7 +312,7 @@ export VERSION="$VERSION"
 export ARCH="x86_64"
 
 # Try multiple update information formats for better compatibility
-UPDATE_INFO="gh-releases-zsync|Covin90|romm-retroarch-sync|latest|RomM-RetroArch-Sync-v*.AppImage.zsync"
+UPDATE_INFO="gh-releases-zsync|rmonk|romm-retroarch-sync|latest|RomM-RetroArch-Sync-*.AppImage.zsync"
 
 echo "📝 Using update info: $UPDATE_INFO"
 echo "📝 Using version: $VERSION"
