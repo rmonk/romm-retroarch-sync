@@ -205,6 +205,8 @@ class GameDataCache:
             with open(self.games_cache_file, 'r', encoding='utf-8') as f:
                 cache_data = json.load(f)
             
+            games = cache_data.get('games', [])
+
             # Read last_sync_datetime or derive from timestamp
             self.last_sync_datetime = cache_data.get('last_sync_datetime')
             if not self.last_sync_datetime and 'timestamp' in cache_data:
@@ -215,12 +217,14 @@ class GameDataCache:
                 except Exception:
                     pass
 
-            # Check if cache is still valid
-            if time.time() - cache_data.get('timestamp', 0) > self.cache_expiry:
-                print("📅 Games cache expired, will refresh on next connection")
+            if not games:
+                self.last_sync_datetime = None
+                self.original_total = 0
                 return []
 
-            games = cache_data.get('games', [])
+            # Check if cache is expired (for informational logging)
+            if time.time() - cache_data.get('timestamp', 0) > self.cache_expiry:
+                print("📅 Games cache is over 24h old, freshness check on connect will check for server updates")
 
             # Load original ungrouped count from cache (for accurate server comparison)
             self.original_total = cache_data.get('original_total', len(games))

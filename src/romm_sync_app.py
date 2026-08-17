@@ -10822,7 +10822,7 @@ class SyncWindow(Gtk.ApplicationWindow):
                                             def auto_refresh():
                                                 self.update_connection_ui_with_message(f"⟳ Cache outdated ({count_diff} games difference) - auto-refreshing...")
                                                 self.log_message(f"📊 Auto-refreshing: {count_diff} games difference detected")
-                                                self.refresh_games_list()
+                                                self.refresh_games_list(force_full_refresh=True)
                                                 # Invalidate collections cache so collection view gets fresh data
                                                 if hasattr(self, 'library_section'):
                                                     self.library_section.collections_cache_time = 0
@@ -10867,7 +10867,7 @@ class SyncWindow(Gtk.ApplicationWindow):
                         # Always fetch on first startup (no cached games)
                         self.update_connection_ui("loading")
                         self.log_message("🔄 Connected! Loading games list for first time...")
-                        self.refresh_games_list()
+                        self.refresh_games_list(force_full_refresh=True)
 
                     # Restore collection auto-sync if it was enabled
                     if hasattr(self, 'library_section'):
@@ -11687,9 +11687,18 @@ class SyncWindow(Gtk.ApplicationWindow):
                 server_url = self.romm_client.base_url
 
                 # Determine whether to do incremental or full refresh
+                # Incremental sync is ONLY valid if we have a last sync timestamp AND
+                # an existing catalog of server games in memory to apply deltas to.
+                has_existing_catalog = (
+                    hasattr(self, 'available_games') and
+                    isinstance(self.available_games, list) and
+                    len([g for g in self.available_games if isinstance(g, dict) and g.get('rom_id')]) > 0
+                )
+
                 use_incremental = (
                     not force_full_refresh and
-                    self._last_full_fetch_time is not None
+                    self._last_full_fetch_time is not None and
+                    has_existing_catalog
                 )
 
                 if use_incremental:
@@ -11864,6 +11873,13 @@ class SyncWindow(Gtk.ApplicationWindow):
         try:
             sync_start = time.time()
 
+            # If in-memory library has no server games, fallback to full sync
+            server_games_count = len([g for g in self.available_games if isinstance(g, dict) and g.get('rom_id')]) if (hasattr(self, 'available_games') and self.available_games) else 0
+            if server_games_count == 0:
+                self.log_message("Incremental sync: no server games in memory, falling back to full sync...")
+                self.perform_full_sync(download_dir, server_url)
+                return
+
             # Fetch only ROMs updated since last check
             updated_after = self._last_full_fetch_time
             self.log_message(f"Checking for updates since {updated_after}...")
@@ -11895,7 +11911,7 @@ class SyncWindow(Gtk.ApplicationWindow):
                     return False
 
                 GLib.idle_add(update_ui_up_to_date)
-                if hasattr(self, 'game_cache'):
+                if hasattr(self, 'game_cache') and self.available_games and len(self.available_games) > 0 and server_games_count > 0:
                     threading.Thread(target=lambda: self.game_cache.save_games_data(self.available_games, last_sync_datetime=now_str), daemon=True).start()
                 return
 
