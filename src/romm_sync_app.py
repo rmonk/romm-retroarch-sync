@@ -713,6 +713,8 @@ _SNI_DBUS_XML = '''<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Intro
   <interface name="com.canonical.dbusmenu">
     <property name="Version" type="u" access="read"/>
     <property name="Status" type="s" access="read"/>
+    <property name="TextDirection" type="s" access="read"/>
+    <property name="IconThemePath" type="as" access="read"/>
     <method name="GetLayout">
       <arg name="parentId" type="i" direction="in"/>
       <arg name="recursionDepth" type="i" direction="in"/>
@@ -736,6 +738,19 @@ _SNI_DBUS_XML = '''<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Intro
       <arg name="data" type="v" direction="in"/>
       <arg name="timestamp" type="u" direction="in"/>
     </method>
+    <method name="EventGroup">
+      <arg name="events" type="a(isvu)" direction="in"/>
+      <arg name="idErrors" type="ai" direction="out"/>
+    </method>
+    <method name="AboutToShow">
+      <arg name="id" type="i" direction="in"/>
+      <arg name="needUpdate" type="b" direction="out"/>
+    </method>
+    <method name="AboutToShowGroup">
+      <arg name="ids" type="ai" direction="in"/>
+      <arg name="updatesNeeded" type="ai" direction="out"/>
+      <arg name="idErrors" type="ai" direction="out"/>
+    </method>
     <signal name="ItemsPropertiesUpdated">
       <arg name="updatedProps" type="a(ia{sv})"/>
       <arg name="removedProps" type="a(ias)"/>
@@ -746,6 +761,12 @@ _SNI_DBUS_XML = '''<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Intro
     </signal>
   </interface>
 </node>'''
+
+def _register_dbus_object(bus, path, iface_info, method_call_func, get_prop_func=None, set_prop_func=None):
+    """Register D-Bus object without deprecation warnings across PyGObject versions"""
+    if hasattr(bus, 'register_object_with_closures2'):
+        return bus.register_object_with_closures2(path, iface_info, method_call_func, get_prop_func, set_prop_func)
+    return bus.register_object(path, iface_info, method_call_func, get_prop_func, set_prop_func)
 
 class TrayIcon:
     """Native D-Bus StatusNotifierItem tray icon.
@@ -815,7 +836,8 @@ class TrayIcon:
             sni_iface = node_info.interfaces[0]
             menu_iface = node_info.interfaces[1]
 
-            self.sni_reg_id = self.bus.register_object(
+            self.sni_reg_id = _register_dbus_object(
+                self.bus,
                 '/StatusNotifierItem',
                 sni_iface,
                 self._on_sni_method_call,
@@ -823,7 +845,8 @@ class TrayIcon:
                 None
             )
 
-            self.menu_reg_id = self.bus.register_object(
+            self.menu_reg_id = _register_dbus_object(
+                self.bus,
                 '/StatusNotifierMenu',
                 menu_iface,
                 self._on_menu_method_call,
@@ -912,35 +935,64 @@ class TrayIcon:
             return GLib.Variant('o', '/StatusNotifierMenu')
         return None
 
+    def _get_menu_item_props(self, item_id):
+        if item_id == 1:
+            return {
+                'label': GLib.Variant('s', 'Show/Hide Window'),
+                'enabled': GLib.Variant('b', True),
+                'visible': GLib.Variant('b', True),
+                'type': GLib.Variant('s', 'standard')
+            }
+        elif item_id == 2:
+            return {
+                'label': GLib.Variant('s', 'Quit'),
+                'enabled': GLib.Variant('b', True),
+                'visible': GLib.Variant('b', True),
+                'type': GLib.Variant('s', 'standard')
+            }
+        return {}
+
     def _on_menu_method_call(self, conn, sender, obj_path, iface_name, method_name, params, invocation):
-        if method_name == 'GetLayout':
-            item1 = GLib.Variant('(ia{sv}av)', (1, {'label': GLib.Variant('s', 'Show/Hide Window')}, []))
-            item2 = GLib.Variant('(ia{sv}av)', (2, {'label': GLib.Variant('s', 'Quit')}, []))
-            root = (0, {'children-display': GLib.Variant('s', 'submenu')}, [GLib.Variant('v', item1), GLib.Variant('v', item2)])
-            invocation.return_value(GLib.Variant('(u(ia{sv}av))', (1, root)))
-        elif method_name == 'Event':
-            menu_id, event_id, data, ts = params.unpack()
-            if event_id == 'clicked':
-                if menu_id == 1:
-                    GLib.idle_add(self.on_toggle_window)
-                elif menu_id == 2:
-                    GLib.idle_add(self.on_quit)
-            invocation.return_value(None)
-        elif method_name == 'GetGroupProperties':
-            res = [
-                (1, {'label': GLib.Variant('s', 'Show/Hide Window')}),
-                (2, {'label': GLib.Variant('s', 'Quit')})
-            ]
-            invocation.return_value(GLib.Variant('(a(ia{sv}))', (res,)))
-        elif method_name == 'GetProperty':
-            item_id, prop_name = params.unpack()
-            if item_id == 1 and prop_name == 'label':
-                invocation.return_value(GLib.Variant('(v)', (GLib.Variant('s', 'Show/Hide Window'),)))
-            elif item_id == 2 and prop_name == 'label':
-                invocation.return_value(GLib.Variant('(v)', (GLib.Variant('s', 'Quit'),)))
+        try:
+            if method_name == 'GetLayout':
+                item1 = GLib.Variant('(ia{sv}av)', (1, self._get_menu_item_props(1), []))
+                item2 = GLib.Variant('(ia{sv}av)', (2, self._get_menu_item_props(2), []))
+                root_props = {'children-display': GLib.Variant('s', 'submenu')}
+                root = (0, root_props, [GLib.Variant('v', item1), GLib.Variant('v', item2)])
+                invocation.return_value(GLib.Variant('(u(ia{sv}av))', (1, root)))
+            elif method_name == 'AboutToShow':
+                invocation.return_value(GLib.Variant('(b)', (False,)))
+            elif method_name == 'AboutToShowGroup':
+                invocation.return_value(GLib.Variant('(aiai)', ([], [])))
+            elif method_name == 'GetGroupProperties':
+                ids, prop_names = params.unpack()
+                res = []
+                for item_id in ids:
+                    props = self._get_menu_item_props(item_id)
+                    if props:
+                        res.append((item_id, props))
+                invocation.return_value(GLib.Variant('(a(ia{sv}))', (res,)))
+            elif method_name == 'GetProperty':
+                item_id, prop_name = params.unpack()
+                props = self._get_menu_item_props(item_id)
+                if prop_name in props:
+                    invocation.return_value(GLib.Variant('(v)', (props[prop_name],)))
+                else:
+                    invocation.return_value(GLib.Variant('(v)', (GLib.Variant('s', ''),)))
+            elif method_name == 'Event':
+                menu_id, event_id, data, ts = params.unpack()
+                if event_id == 'clicked':
+                    if menu_id == 1:
+                        GLib.idle_add(self.on_toggle_window)
+                    elif menu_id == 2:
+                        GLib.idle_add(self.on_quit)
+                invocation.return_value(None)
+            elif method_name == 'EventGroup':
+                invocation.return_value(GLib.Variant('(ai)', ([],)))
             else:
-                invocation.return_value(GLib.Variant('(v)', (GLib.Variant('s', ''),)))
-        else:
+                invocation.return_value(None)
+        except Exception as e:
+            print(f"❌ DBusMenu error in {method_name}: {e}")
             invocation.return_value(None)
 
     def _on_menu_get_property(self, conn, sender, obj_path, iface_name, prop_name):
@@ -948,6 +1000,10 @@ class TrayIcon:
             return GLib.Variant('u', 3)
         elif prop_name == 'Status':
             return GLib.Variant('s', 'normal')
+        elif prop_name == 'TextDirection':
+            return GLib.Variant('s', 'ltr')
+        elif prop_name == 'IconThemePath':
+            return GLib.Variant('as', [])
         return None
 
     def on_toggle_window(self):
@@ -965,10 +1021,9 @@ class TrayIcon:
                     pass
 
             is_visible = self.window.get_visible() if hasattr(self.window, 'get_visible') else self.window.is_visible()
-            is_active = self.window.is_active() if hasattr(self.window, 'is_active') else False
 
-            # If hidden, minimized, or inactive: restore window immediately
-            if not is_visible or is_minimized or not is_active:
+            # If hidden or minimized: show and restore window
+            if not is_visible or is_minimized:
                 self.window.set_visible(True)
                 if hasattr(self.window, 'unminimize'):
                     try:
@@ -977,7 +1032,7 @@ class TrayIcon:
                         pass
                 self.window.present()
             else:
-                # Window is currently active, un-minimized, and focused: hide it to tray
+                # Window is currently visible on screen: hide it to tray!
                 self.window.set_visible(False)
         except Exception as e:
             print(f"❌ Window toggle error: {e}")
