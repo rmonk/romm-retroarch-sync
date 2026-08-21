@@ -738,11 +738,13 @@ gi.require_version('Gtk', '3.0')
 from gi.repository import AppIndicator3, Gtk
 import sys
 import os
+import signal
 
 class TrayIndicator:
     def __init__(self):
         # Use the discovered icon path
         custom_icon_path = "{custom_icon_path}"
+        self.parent_pid = os.getppid()
         
         if custom_icon_path and os.path.exists(custom_icon_path):
             self.indicator = AppIndicator3.Indicator.new(
@@ -777,10 +779,16 @@ class TrayIndicator:
         self.indicator.set_menu(menu)
     
     def on_toggle(self, item):
-        os.system('pkill -USR1 -f romm_sync_app.py')
+        try:
+            os.kill(self.parent_pid, signal.SIGUSR1)
+        except Exception:
+            os.system('pkill -USR1 -f romm_sync_app.py')
     
     def on_quit(self, item):
-        os.system('pkill -TERM -f romm_sync_app.py')
+        try:
+            os.kill(self.parent_pid, signal.SIGTERM)
+        except Exception:
+            os.system('pkill -TERM -f romm_sync_app.py')
         Gtk.main_quit()
 
 if __name__ == "__main__":
@@ -818,13 +826,34 @@ if __name__ == "__main__":
         GLib.idle_add(self.on_quit)
     
     def on_toggle_window(self):
-        """Toggle window visibility"""
+        """Toggle window visibility and state"""
         try:
-            if self.window.is_visible():
-                self.window.set_visible(False)
-            else:
+            surface = self.window.get_surface() if hasattr(self.window, 'get_surface') else None
+            is_minimized = False
+            if surface and hasattr(surface, 'get_state'):
+                try:
+                    state = surface.get_state()
+                    min_flag = getattr(Gdk.ToplevelState, 'MINIMIZED', None) if hasattr(Gdk, 'ToplevelState') else None
+                    if min_flag and (state & min_flag):
+                        is_minimized = True
+                except Exception:
+                    pass
+
+            is_visible = self.window.get_visible() if hasattr(self.window, 'get_visible') else self.window.is_visible()
+            is_active = self.window.is_active() if hasattr(self.window, 'is_active') else False
+
+            # If hidden, minimized, or inactive: show and restore window on first click!
+            if not is_visible or is_minimized or not is_active:
                 self.window.set_visible(True)
+                if hasattr(self.window, 'unminimize'):
+                    try:
+                        self.window.unminimize()
+                    except Exception:
+                        pass
                 self.window.present()
+            else:
+                # Window is currently active, un-minimized, and focused: hide it to tray
+                self.window.set_visible(False)
         except Exception as e:
             print(f"❌ Window toggle error: {e}")
     
