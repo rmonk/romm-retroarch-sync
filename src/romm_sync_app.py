@@ -1,5 +1,36 @@
 #!/usr/bin/env python3
 
+import sys
+
+class _SafeStdStream:
+    """Protects stdout/stderr against fatal locks during interpreter shutdown with daemon threads."""
+    def __init__(self, target):
+        self._target = target
+
+    def write(self, s):
+        if getattr(sys, 'is_finalizing', lambda: False)():
+            return len(s) if s else 0
+        try:
+            return self._target.write(s)
+        except Exception:
+            return len(s) if s else 0
+
+    def flush(self):
+        if getattr(sys, 'is_finalizing', lambda: False)():
+            return
+        try:
+            self._target.flush()
+        except Exception:
+            pass
+
+    def __getattr__(self, name):
+        return getattr(self._target, name)
+
+if not isinstance(sys.stdout, _SafeStdStream):
+    sys.stdout = _SafeStdStream(sys.stdout)
+if not isinstance(sys.stderr, _SafeStdStream):
+    sys.stderr = _SafeStdStream(sys.stderr)
+
 import gi
 import requests
 import json
@@ -14672,12 +14703,26 @@ class SyncApp(Adw.Application):
             else:
                 win.present()
     
-    def on_shutdown(self, app):  # Add this method
+    def on_shutdown(self, app):
         """Clean up before shutdown"""
         print("🚪 Application shutting down...")
         for window in self.get_windows():
-            if hasattr(window, 'tray'):
-                window.tray.cleanup()
+            if hasattr(window, 'auto_sync') and window.auto_sync:
+                try:
+                    window.auto_sync.stop_auto_sync()
+                except Exception:
+                    pass
+            if hasattr(window, 'tray') and window.tray:
+                try:
+                    window.tray.cleanup()
+                except Exception:
+                    pass
+            if hasattr(window, 'library_section') and window.library_section:
+                try:
+                    if hasattr(window.library_section, 'stop_collection_auto_sync'):
+                        window.library_section.stop_collection_auto_sync()
+                except Exception:
+                    pass
 
 def main():
     """Main entry point"""

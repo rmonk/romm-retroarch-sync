@@ -1,10 +1,40 @@
 #!/usr/bin/env python3
 """Core sync logic - GTK-free. Shared by both the desktop app and Decky plugin."""
 
+import sys
+
+class _SafeStdStream:
+    """Protects stdout/stderr against fatal locks during interpreter shutdown with daemon threads."""
+    def __init__(self, target):
+        self._target = target
+
+    def write(self, s):
+        if getattr(sys, 'is_finalizing', lambda: False)():
+            return len(s) if s else 0
+        try:
+            return self._target.write(s)
+        except Exception:
+            return len(s) if s else 0
+
+    def flush(self):
+        if getattr(sys, 'is_finalizing', lambda: False)():
+            return
+        try:
+            self._target.flush()
+        except Exception:
+            pass
+
+    def __getattr__(self, name):
+        return getattr(self._target, name)
+
+if not isinstance(sys.stdout, _SafeStdStream):
+    sys.stdout = _SafeStdStream(sys.stdout)
+if not isinstance(sys.stderr, _SafeStdStream):
+    sys.stderr = _SafeStdStream(sys.stderr)
+
 import requests
 import json
 import os
-import sys
 import shutil
 import threading
 import pickle
