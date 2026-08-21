@@ -11392,16 +11392,17 @@ class SyncWindow(Gtk.ApplicationWindow):
 
         config_group.add(cores_expander)
 
-        # Taskbar / Tray Icon settings
-        tray_expander = Adw.ExpanderRow()
-        tray_expander.set_title("Taskbar / Tray Icon")
-        tray_expander.set_subtitle("Show icon in system tray and configure background behavior")
+        # System Tray & Background group
+        tray_group = Adw.PreferencesGroup()
+        tray_group.set_title("System Tray &amp; Background")
 
-        tray_switch = Gtk.Switch()
-        tray_switch.set_valign(Gtk.Align.CENTER)
         tray_enabled = self.settings.get('System', 'tray_icon_enabled', fallback='true') == 'true'
-        tray_switch.set_active(tray_enabled)
-        tray_expander.add_suffix(tray_switch)
+
+        tray_switch_row = Adw.SwitchRow()
+        tray_switch_row.set_title("Taskbar / Tray Icon")
+        tray_switch_row.set_subtitle("Show application icon in the system tray")
+        tray_switch_row.set_active(tray_enabled)
+        tray_group.add(tray_switch_row)
 
         # Minimize to tray checkbox row
         minimize_row = Adw.ActionRow()
@@ -11410,11 +11411,10 @@ class SyncWindow(Gtk.ApplicationWindow):
         minimize_chk = Gtk.CheckButton()
         minimize_chk.set_valign(Gtk.Align.CENTER)
         minimize_chk.set_active(self.settings.get('System', 'minimize_to_tray', fallback='false') == 'true')
-        minimize_chk.set_sensitive(tray_enabled)
         minimize_row.add_suffix(minimize_chk)
         minimize_row.set_activatable_widget(minimize_chk)
-        minimize_row.set_sensitive(tray_enabled)
-        tray_expander.add_row(minimize_row)
+        minimize_row.set_visible(tray_enabled)
+        tray_group.add(minimize_row)
 
         # Close to tray checkbox row
         close_row = Adw.ActionRow()
@@ -11423,19 +11423,16 @@ class SyncWindow(Gtk.ApplicationWindow):
         close_chk = Gtk.CheckButton()
         close_chk.set_valign(Gtk.Align.CENTER)
         close_chk.set_active(self.settings.get('System', 'close_to_tray', fallback='true') == 'true')
-        close_chk.set_sensitive(tray_enabled)
         close_row.add_suffix(close_chk)
         close_row.set_activatable_widget(close_chk)
-        close_row.set_sensitive(tray_enabled)
-        tray_expander.add_row(close_row)
+        close_row.set_visible(tray_enabled)
+        tray_group.add(close_row)
 
-        def on_tray_switch_changed(switch, _):
-            is_active = switch.get_active()
+        def on_tray_switch_changed(row, _):
+            is_active = row.get_active()
             self.settings.set('System', 'tray_icon_enabled', 'true' if is_active else 'false')
-            minimize_row.set_sensitive(is_active)
-            minimize_chk.set_sensitive(is_active)
-            close_row.set_sensitive(is_active)
-            close_chk.set_sensitive(is_active)
+            minimize_row.set_visible(is_active)
+            close_row.set_visible(is_active)
             if hasattr(self, 'tray') and self.tray:
                 if is_active:
                     self.tray.start()
@@ -11448,11 +11445,9 @@ class SyncWindow(Gtk.ApplicationWindow):
         def on_close_chk_toggled(chk):
             self.settings.set('System', 'close_to_tray', 'true' if chk.get_active() else 'false')
 
-        tray_switch.connect('notify::active', on_tray_switch_changed)
+        tray_switch_row.connect('notify::active', on_tray_switch_changed)
         minimize_chk.connect('toggled', on_minimize_chk_toggled)
         close_chk.connect('toggled', on_close_chk_toggled)
-
-        config_group.add(tray_expander)
 
         # Advanced Tools
         advanced_group = Adw.PreferencesGroup()
@@ -11500,6 +11495,7 @@ class SyncWindow(Gtk.ApplicationWindow):
         page = Adw.PreferencesPage()
         page.add(log_group)
         page.add(config_group)
+        page.add(tray_group)
         page.add(advanced_group)
         dialog.add(page)
 
