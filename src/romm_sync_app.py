@@ -867,6 +867,16 @@ class TrayIcon:
                 None,
                 None
             )
+            try:
+                self.bus.emit_signal(
+                    None,
+                    '/StatusNotifierMenu',
+                    'com.canonical.dbusmenu',
+                    'LayoutUpdated',
+                    GLib.Variant('(ui)', (1, 0))
+                )
+            except Exception:
+                pass
             self._is_running = True
             print("✅ Native StatusNotifierItem registered on D-Bus (Left-click: toggle, Right-click: menu)")
         except Exception as e:
@@ -936,7 +946,11 @@ class TrayIcon:
         return None
 
     def _get_menu_item_props(self, item_id):
-        if item_id == 1:
+        if item_id == 0:
+            return {
+                'children-display': GLib.Variant('s', 'submenu')
+            }
+        elif item_id == 1:
             return {
                 'label': GLib.Variant('s', 'Show/Hide Window'),
                 'enabled': GLib.Variant('b', True),
@@ -1024,6 +1038,7 @@ class TrayIcon:
 
             # If hidden or minimized: show and restore window
             if not is_visible or is_minimized:
+                self.window._is_restoring = True
                 self.window.set_visible(True)
                 if hasattr(self.window, 'unminimize'):
                     try:
@@ -1031,6 +1046,10 @@ class TrayIcon:
                     except Exception:
                         pass
                 self.window.present()
+                def _reset_restoring():
+                    self.window._is_restoring = False
+                    return False
+                GLib.timeout_add(300, _reset_restoring)
             else:
                 # Window is currently visible on screen: hide it to tray!
                 self.window.set_visible(False)
@@ -8789,6 +8808,8 @@ class SyncWindow(Gtk.ApplicationWindow):
             if surface and hasattr(surface, 'get_state'):
                 def on_surface_state_changed(surf, pspec):
                     try:
+                        if getattr(win, '_is_restoring', False):
+                            return
                         state = surf.get_state()
                         minimized_flag = getattr(Gdk.ToplevelState, 'MINIMIZED', None) if hasattr(Gdk, 'ToplevelState') else None
                         if minimized_flag and (state & minimized_flag):
