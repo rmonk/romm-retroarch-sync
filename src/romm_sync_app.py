@@ -166,7 +166,7 @@ except Exception:
 # Try to load Adw, fallback to Gtk if not available (e.g., on SteamOS)
 try:
     gi.require_version('Adw', '1')
-    from gi.repository import Gtk, Adw, GLib, Gio, GObject
+    from gi.repository import Gtk, Gdk, Adw, GLib, Gio, GObject
     HAS_ADW = True
     try:
         Adw.StyleManager.get_default().set_color_scheme(Adw.ColorScheme.PREFER_DARK)
@@ -174,7 +174,7 @@ try:
         pass
 except ValueError:
     # libadwaita not available, use Gtk only
-    from gi.repository import Gtk, GLib, Gio, GObject
+    from gi.repository import Gtk, Gdk, GLib, Gio, GObject
     HAS_ADW = False
 
     # Create a mock Adw module with Gtk-based fallbacks
@@ -8560,14 +8560,18 @@ class SyncWindow(Gtk.ApplicationWindow):
         """Listen to window minimize state changes to support minimize to tray"""
         def on_window_realize(win):
             surface = win.get_surface()
-            if surface:
+            if surface and hasattr(surface, 'get_state'):
                 def on_surface_state_changed(surf, pspec):
-                    state = surf.get_state()
-                    if state & Gdk.ToplevelState.MINIMIZED:
-                        tray_enabled = self.settings.get('System', 'tray_icon_enabled', fallback='true') == 'true'
-                        minimize_to_tray = self.settings.get('System', 'minimize_to_tray', fallback='false') == 'true'
-                        if tray_enabled and minimize_to_tray:
-                            win.set_visible(False)
+                    try:
+                        state = surf.get_state()
+                        minimized_flag = getattr(Gdk.ToplevelState, 'MINIMIZED', None) if hasattr(Gdk, 'ToplevelState') else None
+                        if minimized_flag and (state & minimized_flag):
+                            tray_enabled = self.settings.get('System', 'tray_icon_enabled', fallback='true') == 'true'
+                            minimize_to_tray = self.settings.get('System', 'minimize_to_tray', fallback='false') == 'true'
+                            if tray_enabled and minimize_to_tray:
+                                win.set_visible(False)
+                    except Exception:
+                        pass
                 surface.connect('notify::state', on_surface_state_changed)
 
         self.connect('realize', on_window_realize)
