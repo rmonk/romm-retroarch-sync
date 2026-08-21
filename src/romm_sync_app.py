@@ -674,157 +674,282 @@ if _local_engine.exists() and str(_local_engine) not in sys.path:
 
 from romm_sync_engine.sync_core import *
 
+_SNI_DBUS_XML = '''<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
+"http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
+<node>
+  <interface name="org.kde.StatusNotifierItem">
+    <property name="Category" type="s" access="read"/>
+    <property name="Id" type="s" access="read"/>
+    <property name="Title" type="s" access="read"/>
+    <property name="Status" type="s" access="read"/>
+    <property name="WindowId" type="i" access="read"/>
+    <property name="IconName" type="s" access="read"/>
+    <property name="IconThemePath" type="s" access="read"/>
+    <property name="IconPixmap" type="a(iiay)" access="read"/>
+    <property name="ItemIsMenu" type="b" access="read"/>
+    <property name="Menu" type="o" access="read"/>
+    <method name="ContextMenu">
+      <arg name="x" type="i" direction="in"/>
+      <arg name="y" type="i" direction="in"/>
+    </method>
+    <method name="Activate">
+      <arg name="x" type="i" direction="in"/>
+      <arg name="y" type="i" direction="in"/>
+    </method>
+    <method name="SecondaryActivate">
+      <arg name="x" type="i" direction="in"/>
+      <arg name="y" type="i" direction="in"/>
+    </method>
+    <method name="Scroll">
+      <arg name="delta" type="i" direction="in"/>
+      <arg name="orientation" type="s" direction="in"/>
+    </method>
+    <signal name="NewTitle"/>
+    <signal name="NewIcon"/>
+    <signal name="NewStatus">
+      <arg name="status" type="s"/>
+    </signal>
+  </interface>
+  <interface name="com.canonical.dbusmenu">
+    <property name="Version" type="u" access="read"/>
+    <property name="Status" type="s" access="read"/>
+    <method name="GetLayout">
+      <arg name="parentId" type="i" direction="in"/>
+      <arg name="recursionDepth" type="i" direction="in"/>
+      <arg name="propertyNames" type="as" direction="in"/>
+      <arg name="revision" type="u" direction="out"/>
+      <arg name="layout" type="(ia{sv}av)" direction="out"/>
+    </method>
+    <method name="GetGroupProperties">
+      <arg name="ids" type="ai" direction="in"/>
+      <arg name="propertyNames" type="as" direction="in"/>
+      <arg name="properties" type="a(ia{sv})" direction="out"/>
+    </method>
+    <method name="GetProperty">
+      <arg name="id" type="i" direction="in"/>
+      <arg name="name" type="s" direction="in"/>
+      <arg name="value" type="v" direction="out"/>
+    </method>
+    <method name="Event">
+      <arg name="id" type="i" direction="in"/>
+      <arg name="eventId" type="s" direction="in"/>
+      <arg name="data" type="v" direction="in"/>
+      <arg name="timestamp" type="u" direction="in"/>
+    </method>
+    <signal name="ItemsPropertiesUpdated">
+      <arg name="updatedProps" type="a(ia{sv})"/>
+      <arg name="removedProps" type="a(ias)"/>
+    </signal>
+    <signal name="LayoutUpdated">
+      <arg name="revision" type="u"/>
+      <arg name="parent" type="i"/>
+    </signal>
+  </interface>
+</node>'''
+
 class TrayIcon:
-    """Cross-desktop tray icon using subprocess for AppIndicator"""
+    """Native D-Bus StatusNotifierItem tray icon.
+    
+    Left-click: Directly hides / restores the window (no menu popup).
+    Right-click: Opens native context menu (Show/Hide Window, Quit).
+    """
     
     def __init__(self, app, window, auto_start=True):
         self.app = app
         self.window = window
-        self.tray_process = None
-        self.desktop = self.detect_desktop()
-        if auto_start:
-            self.setup_tray()
-    
-    def detect_desktop(self):
-        """Detect current desktop environment"""
-        desktop_env = os.environ.get('XDG_CURRENT_DESKTOP', '').lower()
-        if 'gnome' in desktop_env or 'cinnamon' in desktop_env:
-            return 'gnome'
-        elif 'kde' in desktop_env:
-            return 'kde'
-        return 'other'
-
-    def is_running(self):
-        """Check if tray process is active"""
-        return self.tray_process is not None and self.tray_process.poll() is None
-
-    def start(self):
-        """Start tray icon subprocess if not running"""
-        if not self.is_running():
-            self.setup_tray()
-
-    def stop(self):
-        """Stop tray icon subprocess if running"""
-        self.cleanup()
-    
-    def setup_tray(self):
-        """Setup tray icon using subprocess"""
-        import subprocess
-        import sys
-        import os
+        self.bus = None
+        self.sni_reg_id = None
+        self.menu_reg_id = None
+        self._is_running = False
         
-        # Get the correct icon path for the new structure
+        # Discover icon path
         script_dir = os.path.dirname(os.path.abspath(__file__))
         project_root = os.path.dirname(script_dir)
-        
-        # Try multiple icon locations
         icon_locations = [
             os.path.join(project_root, 'assets', 'icons', 'romm_icon.png'),
             os.path.join(os.environ.get('APPDIR', ''), 'usr/bin/romm_icon.png'),
             os.path.join(script_dir, 'romm_icon.png'),
             'romm_icon.png'
         ]
-        
-        custom_icon_path = None
+        self.icon_path = None
+        self.icon_dir = ""
         for location in icon_locations:
             if os.path.exists(location):
-                custom_icon_path = location
+                self.icon_path = location
+                self.icon_dir = os.path.dirname(os.path.abspath(location))
                 break
         
-        # Create the tray script content with corrected icon path
-        tray_script = f'''import gi
-gi.require_version('AppIndicator3', '0.1')
-gi.require_version('Gtk', '3.0')
-from gi.repository import AppIndicator3, Gtk
-import sys
-import os
-import signal
+        self.icon_pixmap_data = self._generate_icon_pixmap()
+        
+        if auto_start:
+            self.start()
 
-class TrayIndicator:
-    def __init__(self):
-        # Use the discovered icon path
-        custom_icon_path = "{custom_icon_path}"
-        self.parent_pid = os.getppid()
-        
-        if custom_icon_path and os.path.exists(custom_icon_path):
-            self.indicator = AppIndicator3.Indicator.new(
-                "romm-retroarch-sync",
-                custom_icon_path,
-                AppIndicator3.IndicatorCategory.APPLICATION_STATUS
-            )
-        else:
-            # Fallback to system icon
-            self.indicator = AppIndicator3.Indicator.new(
-                "romm-retroarch-sync",
-                "application-x-executable",
-                AppIndicator3.IndicatorCategory.APPLICATION_STATUS
-            )
-            print("Using fallback system icon for tray")
-        
-        self.indicator.set_status(AppIndicator3.IndicatorStatus.ACTIVE)
-        self.indicator.set_title("RomM - RetroArch Sync")
-        
-        # Create menu
-        menu = Gtk.Menu()
-        
-        show_item = Gtk.MenuItem(label="Show/Hide Window")
-        show_item.connect('activate', self.on_toggle)
-        menu.append(show_item)
-        
-        quit_item = Gtk.MenuItem(label="Quit")
-        quit_item.connect('activate', self.on_quit)
-        menu.append(quit_item)
-        
-        menu.show_all()
-        self.indicator.set_menu(menu)
-    
-    def on_toggle(self, item):
+    def _generate_icon_pixmap(self):
+        """Generate ARGB32 icon pixmap data for StatusNotifierItem"""
         try:
-            os.kill(self.parent_pid, signal.SIGUSR1)
+            from PIL import Image
+            if self.icon_path and os.path.exists(self.icon_path):
+                img = Image.open(self.icon_path).convert('RGBA')
+                img = img.resize((32, 32))
+                r, g, b, a = img.split()
+                argb_bytes = Image.merge('RGBA', (a, r, g, b)).tobytes()
+                return [(32, 32, argb_bytes)]
         except Exception:
-            os.system('pkill -USR1 -f romm_sync_app.py')
-    
-    def on_quit(self, item):
-        try:
-            os.kill(self.parent_pid, signal.SIGTERM)
-        except Exception:
-            os.system('pkill -TERM -f romm_sync_app.py')
-        Gtk.main_quit()
+            pass
+        return []
 
-if __name__ == "__main__":
-    try:
-        indicator = TrayIndicator()
-        Gtk.main()
-    except KeyboardInterrupt:
-        pass
-'''
-        
-        # Write script to temp file
-        import tempfile
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
-            f.write(tray_script)
-            script_path = f.name
+    def is_running(self):
+        return self._is_running
+
+    def start(self):
+        """Register StatusNotifierItem and DBusMenu on session D-Bus"""
+        if self._is_running:
+            return
         
         try:
-            # Start tray process
-            self.tray_process = subprocess.Popen([sys.executable, script_path])
+            self.bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+            if not self.bus:
+                return
 
-            # Setup signal handlers
-            import signal
-            signal.signal(signal.SIGUSR1, self._on_toggle_signal)
-            signal.signal(signal.SIGTERM, self._on_quit_signal)
-            
+            node_info = Gio.DBusNodeInfo.new_for_xml(_SNI_DBUS_XML)
+            sni_iface = node_info.interfaces[0]
+            menu_iface = node_info.interfaces[1]
+
+            self.sni_reg_id = self.bus.register_object(
+                '/StatusNotifierItem',
+                sni_iface,
+                self._on_sni_method_call,
+                self._on_sni_get_property,
+                None
+            )
+
+            self.menu_reg_id = self.bus.register_object(
+                '/StatusNotifierMenu',
+                menu_iface,
+                self._on_menu_method_call,
+                self._on_menu_get_property,
+                None
+            )
+
+            # Register with StatusNotifierWatcher
+            self.bus.call(
+                'org.kde.StatusNotifierWatcher',
+                '/StatusNotifierWatcher',
+                'org.kde.StatusNotifierWatcher',
+                'RegisterStatusNotifierItem',
+                GLib.Variant('(s)', ('/StatusNotifierItem',)),
+                None,
+                Gio.DBusCallFlags.NONE,
+                -1,
+                None,
+                None
+            )
+            self._is_running = True
+            print("✅ Native StatusNotifierItem registered on D-Bus (Left-click: toggle, Right-click: menu)")
         except Exception as e:
-            print(f"❌ Tray setup failed: {e}")
-    
-    def _on_toggle_signal(self, signum, frame):
-        """Handle toggle signal from tray"""
-        GLib.idle_add(self.on_toggle_window)
-    
-    def _on_quit_signal(self, signum, frame):
-        """Handle quit signal from tray"""
-        GLib.idle_add(self.on_quit)
-    
+            print(f"❌ Failed to start StatusNotifierItem tray: {e}")
+
+    def stop(self):
+        self.cleanup()
+
+    def cleanup(self):
+        """Unregister D-Bus objects and clean up tray"""
+        if not self._is_running:
+            return
+        try:
+            if self.bus:
+                if self.sni_reg_id:
+                    self.bus.unregister_object(self.sni_reg_id)
+                    self.sni_reg_id = None
+                if self.menu_reg_id:
+                    self.bus.unregister_object(self.menu_reg_id)
+                    self.menu_reg_id = None
+            self._is_running = False
+            print("✅ StatusNotifierItem tray cleaned up")
+        except Exception as e:
+            print(f"⚠️ Error cleaning up tray: {e}")
+
+    def _on_sni_method_call(self, conn, sender, obj_path, iface_name, method_name, params, invocation):
+        if method_name in ('Activate', 'SecondaryActivate'):
+            # Direct left-click / middle-click: toggle window state immediately
+            GLib.idle_add(self.on_toggle_window)
+            invocation.return_value(None)
+        elif method_name == 'ContextMenu':
+            # Right-click: handled by host via dbusmenu
+            invocation.return_value(None)
+        elif method_name == 'Scroll':
+            invocation.return_value(None)
+        else:
+            invocation.return_value(None)
+
+    def _on_sni_get_property(self, conn, sender, obj_path, iface_name, prop_name):
+        if prop_name == 'Category':
+            return GLib.Variant('s', 'ApplicationStatus')
+        elif prop_name == 'Id':
+            return GLib.Variant('s', 'romm-retroarch-sync')
+        elif prop_name == 'Title':
+            return GLib.Variant('s', 'RomM - RetroArch Sync')
+        elif prop_name == 'Status':
+            return GLib.Variant('s', 'Active')
+        elif prop_name == 'WindowId':
+            return GLib.Variant('i', 0)
+        elif prop_name == 'IconName':
+            return GLib.Variant('s', 'romm_icon' if self.icon_path else 'application-x-executable')
+        elif prop_name == 'IconThemePath':
+            return GLib.Variant('s', self.icon_dir)
+        elif prop_name == 'IconPixmap':
+            if self.icon_pixmap_data:
+                pix_variants = [
+                    GLib.Variant('(iiay)', (w, h, bytearray(data)))
+                    for w, h, data in self.icon_pixmap_data
+                ]
+                return GLib.Variant('a(iiay)', pix_variants)
+            return GLib.Variant('a(iiay)', [])
+        elif prop_name == 'ItemIsMenu':
+            # Critical: False ensures left-click triggers Activate() rather than opening menu
+            return GLib.Variant('b', False)
+        elif prop_name == 'Menu':
+            return GLib.Variant('o', '/StatusNotifierMenu')
+        return None
+
+    def _on_menu_method_call(self, conn, sender, obj_path, iface_name, method_name, params, invocation):
+        if method_name == 'GetLayout':
+            item1 = GLib.Variant('(ia{sv}av)', (1, {'label': GLib.Variant('s', 'Show/Hide Window')}, []))
+            item2 = GLib.Variant('(ia{sv}av)', (2, {'label': GLib.Variant('s', 'Quit')}, []))
+            root = (0, {'children-display': GLib.Variant('s', 'submenu')}, [GLib.Variant('v', item1), GLib.Variant('v', item2)])
+            invocation.return_value(GLib.Variant('(u(ia{sv}av))', (1, root)))
+        elif method_name == 'Event':
+            menu_id, event_id, data, ts = params.unpack()
+            if event_id == 'clicked':
+                if menu_id == 1:
+                    GLib.idle_add(self.on_toggle_window)
+                elif menu_id == 2:
+                    GLib.idle_add(self.on_quit)
+            invocation.return_value(None)
+        elif method_name == 'GetGroupProperties':
+            res = [
+                (1, {'label': GLib.Variant('s', 'Show/Hide Window')}),
+                (2, {'label': GLib.Variant('s', 'Quit')})
+            ]
+            invocation.return_value(GLib.Variant('(a(ia{sv}))', (res,)))
+        elif method_name == 'GetProperty':
+            item_id, prop_name = params.unpack()
+            if item_id == 1 and prop_name == 'label':
+                invocation.return_value(GLib.Variant('(v)', (GLib.Variant('s', 'Show/Hide Window'),)))
+            elif item_id == 2 and prop_name == 'label':
+                invocation.return_value(GLib.Variant('(v)', (GLib.Variant('s', 'Quit'),)))
+            else:
+                invocation.return_value(GLib.Variant('(v)', (GLib.Variant('s', ''),)))
+        else:
+            invocation.return_value(None)
+
+    def _on_menu_get_property(self, conn, sender, obj_path, iface_name, prop_name):
+        if prop_name == 'Version':
+            return GLib.Variant('u', 3)
+        elif prop_name == 'Status':
+            return GLib.Variant('s', 'normal')
+        return None
+
     def on_toggle_window(self):
         """Toggle window visibility and state"""
         try:
@@ -842,7 +967,7 @@ if __name__ == "__main__":
             is_visible = self.window.get_visible() if hasattr(self.window, 'get_visible') else self.window.is_visible()
             is_active = self.window.is_active() if hasattr(self.window, 'is_active') else False
 
-            # If hidden, minimized, or inactive: show and restore window on first click!
+            # If hidden, minimized, or inactive: restore window immediately
             if not is_visible or is_minimized or not is_active:
                 self.window.set_visible(True)
                 if hasattr(self.window, 'unminimize'):
@@ -856,7 +981,7 @@ if __name__ == "__main__":
                 self.window.set_visible(False)
         except Exception as e:
             print(f"❌ Window toggle error: {e}")
-    
+
     def on_quit(self):
         """Quit application"""
         try:
@@ -864,20 +989,6 @@ if __name__ == "__main__":
             self.app.quit()
         except Exception as e:
             print(f"❌ Quit error: {e}")
-    
-    def cleanup(self):
-        """Clean up tray process"""
-        if self.tray_process:
-            try:
-                self.tray_process.terminate()
-                self.tray_process.wait(timeout=2)
-            except Exception:
-                try:
-                    self.tray_process.kill()
-                except Exception:
-                    pass
-            self.tray_process = None
-            print("✅ Tray icon cleaned up")
         
 class GameItem(GObject.Object):
     def __init__(self, game_data):
