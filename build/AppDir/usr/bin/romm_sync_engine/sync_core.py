@@ -857,7 +857,10 @@ class SettingsManager:
             }
             self.config['System'] = {
                 'autostart': 'false',
-                'debug_mode': 'false'
+                'debug_mode': 'false',
+                'tray_icon_enabled': 'true',
+                'minimize_to_tray': 'false',
+                'close_to_tray': 'true'
             }
             self.config['Collections'] = {
                 'sync_interval': '120',

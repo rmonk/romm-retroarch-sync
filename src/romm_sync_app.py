@@ -646,12 +646,13 @@ from romm_sync_engine.sync_core import *
 class TrayIcon:
     """Cross-desktop tray icon using subprocess for AppIndicator"""
     
-    def __init__(self, app, window):
+    def __init__(self, app, window, auto_start=True):
         self.app = app
         self.window = window
         self.tray_process = None
         self.desktop = self.detect_desktop()
-        self.setup_tray()
+        if auto_start:
+            self.setup_tray()
     
     def detect_desktop(self):
         """Detect current desktop environment"""
@@ -661,6 +662,19 @@ class TrayIcon:
         elif 'kde' in desktop_env:
             return 'kde'
         return 'other'
+
+    def is_running(self):
+        """Check if tray process is active"""
+        return self.tray_process is not None and self.tray_process.poll() is None
+
+    def start(self):
+        """Start tray icon subprocess if not running"""
+        if not self.is_running():
+            self.setup_tray()
+
+    def stop(self):
+        """Stop tray icon subprocess if running"""
+        self.cleanup()
     
     def setup_tray(self):
         """Setup tray icon using subprocess"""
@@ -794,7 +808,15 @@ if __name__ == "__main__":
     def cleanup(self):
         """Clean up tray process"""
         if self.tray_process:
-            self.tray_process.terminate()
+            try:
+                self.tray_process.terminate()
+                self.tray_process.wait(timeout=2)
+            except Exception:
+                try:
+                    self.tray_process.kill()
+                except Exception:
+                    pass
+            self.tray_process = None
             print("✅ Tray icon cleaned up")
         
 class GameItem(GObject.Object):
@@ -8492,7 +8514,9 @@ class SyncWindow(Gtk.ApplicationWindow):
         collapse_act.connect("activate", lambda a, p: self.library_section.on_collapse_all(None) if hasattr(self, 'library_section') else None)
         self.add_action(collapse_act)
 
-        self.tray = TrayIcon(self.get_application(), self)
+        tray_enabled = self.settings.get('System', 'tray_icon_enabled', fallback='true') == 'true'
+        self.tray = TrayIcon(self.get_application(), self, auto_start=tray_enabled)
+        self.setup_minimize_to_tray()
 
         self._pending_refresh = False
         
@@ -8531,6 +8555,22 @@ class SyncWindow(Gtk.ApplicationWindow):
         GLib.timeout_add(2000, setup_periodic_cleanup)
         # ADD AUTO-CONNECT LOGIC:
         GLib.timeout_add(50, self.try_auto_connect)
+
+    def setup_minimize_to_tray(self):
+        """Listen to window minimize state changes to support minimize to tray"""
+        def on_window_realize(win):
+            surface = win.get_surface()
+            if surface:
+                def on_surface_state_changed(surf, pspec):
+                    state = surf.get_state()
+                    if state & Gdk.ToplevelState.MINIMIZED:
+                        tray_enabled = self.settings.get('System', 'tray_icon_enabled', fallback='true') == 'true'
+                        minimize_to_tray = self.settings.get('System', 'minimize_to_tray', fallback='false') == 'true'
+                        if tray_enabled and minimize_to_tray:
+                            win.set_visible(False)
+                surface.connect('notify::state', on_surface_state_changed)
+
+        self.connect('realize', on_window_realize)
 
     def create_status_dot(self, color='grey', size=10):
         """Create a Cairo-drawn status dot widget
@@ -11317,6 +11357,68 @@ class SyncWindow(Gtk.ApplicationWindow):
 
         config_group.add(cores_expander)
 
+        # Taskbar / Tray Icon settings
+        tray_expander = Adw.ExpanderRow()
+        tray_expander.set_title("Taskbar / Tray Icon")
+        tray_expander.set_subtitle("Show icon in system tray and configure background behavior")
+
+        tray_switch = Gtk.Switch()
+        tray_switch.set_valign(Gtk.Align.CENTER)
+        tray_enabled = self.settings.get('System', 'tray_icon_enabled', fallback='true') == 'true'
+        tray_switch.set_active(tray_enabled)
+        tray_expander.add_suffix(tray_switch)
+
+        # Minimize to tray checkbox row
+        minimize_row = Adw.ActionRow()
+        minimize_row.set_title("Minimize to Tray")
+        minimize_row.set_subtitle("Hide window to the system tray when minimized")
+        minimize_chk = Gtk.CheckButton()
+        minimize_chk.set_valign(Gtk.Align.CENTER)
+        minimize_chk.set_active(self.settings.get('System', 'minimize_to_tray', fallback='false') == 'true')
+        minimize_chk.set_sensitive(tray_enabled)
+        minimize_row.add_suffix(minimize_chk)
+        minimize_row.set_activatable_widget(minimize_chk)
+        minimize_row.set_sensitive(tray_enabled)
+        tray_expander.add_row(minimize_row)
+
+        # Close to tray checkbox row
+        close_row = Adw.ActionRow()
+        close_row.set_title("Close to Tray")
+        close_row.set_subtitle("Keep application running in system tray when window is closed")
+        close_chk = Gtk.CheckButton()
+        close_chk.set_valign(Gtk.Align.CENTER)
+        close_chk.set_active(self.settings.get('System', 'close_to_tray', fallback='true') == 'true')
+        close_chk.set_sensitive(tray_enabled)
+        close_row.add_suffix(close_chk)
+        close_row.set_activatable_widget(close_chk)
+        close_row.set_sensitive(tray_enabled)
+        tray_expander.add_row(close_row)
+
+        def on_tray_switch_changed(switch, _):
+            is_active = switch.get_active()
+            self.settings.set('System', 'tray_icon_enabled', 'true' if is_active else 'false')
+            minimize_row.set_sensitive(is_active)
+            minimize_chk.set_sensitive(is_active)
+            close_row.set_sensitive(is_active)
+            close_chk.set_sensitive(is_active)
+            if hasattr(self, 'tray') and self.tray:
+                if is_active:
+                    self.tray.start()
+                else:
+                    self.tray.stop()
+
+        def on_minimize_chk_toggled(chk):
+            self.settings.set('System', 'minimize_to_tray', 'true' if chk.get_active() else 'false')
+
+        def on_close_chk_toggled(chk):
+            self.settings.set('System', 'close_to_tray', 'true' if chk.get_active() else 'false')
+
+        tray_switch.connect('notify::active', on_tray_switch_changed)
+        minimize_chk.connect('toggled', on_minimize_chk_toggled)
+        close_chk.connect('toggled', on_close_chk_toggled)
+
+        config_group.add(tray_expander)
+
         # Advanced Tools
         advanced_group = Adw.PreferencesGroup()
         advanced_group.set_title("Advanced Tools")
@@ -12850,12 +12952,20 @@ class SyncWindow(Gtk.ApplicationWindow):
     def on_window_close_request(self, _window):
         """Overrides the default window close action.
         
-        Instead of quitting, this will just hide the window to the tray.
-        The actual quit logic is now handled by the StatusNotifierItem class.
+        If tray icon and close-to-tray are enabled, hides the window to the tray.
+        Otherwise, cleans up and allows the application to exit normally.
         """
-        self.set_visible(False)
-        # Return True to prevent the window from being destroyed
-        return True
+        tray_enabled = self.settings.get('System', 'tray_icon_enabled', fallback='true') == 'true'
+        close_to_tray = self.settings.get('System', 'close_to_tray', fallback='true') == 'true'
+
+        if tray_enabled and close_to_tray:
+            self.set_visible(False)
+            # Return True to prevent the window from being destroyed
+            return True
+        else:
+            if hasattr(self, 'tray') and self.tray:
+                self.tray.cleanup()
+            return False
 
     def cancel_download(self, rom_id):
         """Cancel an in-progress download. If part of a bulk operation, cancels all downloads.
