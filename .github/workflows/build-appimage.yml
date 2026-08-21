@@ -16,7 +16,7 @@ on:
         type: boolean
         default: true
       tag_name:
-        description: 'Custom tag name for manual release (leave empty for auto-generated v1.6-yyyy-mm-dd-build_number)'
+        description: 'Custom tag name for manual release (leave empty for auto-generated v1.7-yyyy-mm-dd-build_number)'
         required: false
         type: string
 
@@ -63,7 +63,7 @@ jobs:
         run: |
           BASE_VER=$(grep -oE 'VERSION="\$\{VERSION:-[^"]+\}"' build/build_appimage.sh | sed 's/.*:-//; s/}"//' || echo "1.6")
           if [ -z "$BASE_VER" ]; then
-            BASE_VER="1.6"
+            BASE_VER="1.7"
           fi
           
           DATE_STR=$(date -u +%Y-%m-%d)

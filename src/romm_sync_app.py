@@ -674,396 +674,6 @@ if _local_engine.exists() and str(_local_engine) not in sys.path:
 
 from romm_sync_engine.sync_core import *
 
-_SNI_DBUS_XML = '''<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
-"http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
-<node>
-  <interface name="org.kde.StatusNotifierItem">
-    <property name="Category" type="s" access="read"/>
-    <property name="Id" type="s" access="read"/>
-    <property name="Title" type="s" access="read"/>
-    <property name="Status" type="s" access="read"/>
-    <property name="WindowId" type="i" access="read"/>
-    <property name="IconName" type="s" access="read"/>
-    <property name="IconThemePath" type="s" access="read"/>
-    <property name="IconPixmap" type="a(iiay)" access="read"/>
-    <property name="ItemIsMenu" type="b" access="read"/>
-    <property name="Menu" type="o" access="read"/>
-    <method name="ContextMenu">
-      <arg name="x" type="i" direction="in"/>
-      <arg name="y" type="i" direction="in"/>
-    </method>
-    <method name="Activate">
-      <arg name="x" type="i" direction="in"/>
-      <arg name="y" type="i" direction="in"/>
-    </method>
-    <method name="SecondaryActivate">
-      <arg name="x" type="i" direction="in"/>
-      <arg name="y" type="i" direction="in"/>
-    </method>
-    <method name="Scroll">
-      <arg name="delta" type="i" direction="in"/>
-      <arg name="orientation" type="s" direction="in"/>
-    </method>
-    <signal name="NewTitle"/>
-    <signal name="NewIcon"/>
-    <signal name="NewStatus">
-      <arg name="status" type="s"/>
-    </signal>
-  </interface>
-  <interface name="com.canonical.dbusmenu">
-    <property name="Version" type="u" access="read"/>
-    <property name="Status" type="s" access="read"/>
-    <property name="TextDirection" type="s" access="read"/>
-    <property name="IconThemePath" type="as" access="read"/>
-    <method name="GetLayout">
-      <arg name="parentId" type="i" direction="in"/>
-      <arg name="recursionDepth" type="i" direction="in"/>
-      <arg name="propertyNames" type="as" direction="in"/>
-      <arg name="revision" type="u" direction="out"/>
-      <arg name="layout" type="(ia{sv}av)" direction="out"/>
-    </method>
-    <method name="GetGroupProperties">
-      <arg name="ids" type="ai" direction="in"/>
-      <arg name="propertyNames" type="as" direction="in"/>
-      <arg name="properties" type="a(ia{sv})" direction="out"/>
-    </method>
-    <method name="GetProperty">
-      <arg name="id" type="i" direction="in"/>
-      <arg name="name" type="s" direction="in"/>
-      <arg name="value" type="v" direction="out"/>
-    </method>
-    <method name="Event">
-      <arg name="id" type="i" direction="in"/>
-      <arg name="eventId" type="s" direction="in"/>
-      <arg name="data" type="v" direction="in"/>
-      <arg name="timestamp" type="u" direction="in"/>
-    </method>
-    <method name="EventGroup">
-      <arg name="events" type="a(isvu)" direction="in"/>
-      <arg name="idErrors" type="ai" direction="out"/>
-    </method>
-    <method name="AboutToShow">
-      <arg name="id" type="i" direction="in"/>
-      <arg name="needUpdate" type="b" direction="out"/>
-    </method>
-    <method name="AboutToShowGroup">
-      <arg name="ids" type="ai" direction="in"/>
-      <arg name="updatesNeeded" type="ai" direction="out"/>
-      <arg name="idErrors" type="ai" direction="out"/>
-    </method>
-    <signal name="ItemsPropertiesUpdated">
-      <arg name="updatedProps" type="a(ia{sv})"/>
-      <arg name="removedProps" type="a(ias)"/>
-    </signal>
-    <signal name="LayoutUpdated">
-      <arg name="revision" type="u"/>
-      <arg name="parent" type="i"/>
-    </signal>
-  </interface>
-</node>'''
-
-def _register_dbus_object(bus, path, iface_info, method_call_func, get_prop_func=None, set_prop_func=None):
-    """Register D-Bus object without deprecation warnings across PyGObject versions"""
-    if hasattr(bus, 'register_object_with_closures2'):
-        return bus.register_object_with_closures2(path, iface_info, method_call_func, get_prop_func, set_prop_func)
-    return bus.register_object(path, iface_info, method_call_func, get_prop_func, set_prop_func)
-
-class TrayIcon:
-    """Native D-Bus StatusNotifierItem tray icon.
-    
-    Left-click: Directly hides / restores the window (no menu popup).
-    Right-click: Opens native context menu (Show/Hide Window, Quit).
-    """
-    
-    def __init__(self, app, window, auto_start=True):
-        self.app = app
-        self.window = window
-        self.bus = None
-        self.sni_reg_id = None
-        self.menu_reg_id = None
-        self._is_running = False
-        
-        # Discover icon path
-        script_dir = os.path.dirname(os.path.abspath(__file__))
-        project_root = os.path.dirname(script_dir)
-        icon_locations = [
-            os.path.join(project_root, 'assets', 'icons', 'romm_icon.png'),
-            os.path.join(os.environ.get('APPDIR', ''), 'usr/bin/romm_icon.png'),
-            os.path.join(script_dir, 'romm_icon.png'),
-            'romm_icon.png'
-        ]
-        self.icon_path = None
-        self.icon_dir = ""
-        for location in icon_locations:
-            if os.path.exists(location):
-                self.icon_path = location
-                self.icon_dir = os.path.dirname(os.path.abspath(location))
-                break
-        
-        self.icon_pixmap_data = self._generate_icon_pixmap()
-        
-        if auto_start:
-            self.start()
-
-    def _generate_icon_pixmap(self):
-        """Generate ARGB32 icon pixmap data for StatusNotifierItem"""
-        try:
-            from PIL import Image
-            if self.icon_path and os.path.exists(self.icon_path):
-                img = Image.open(self.icon_path).convert('RGBA')
-                img = img.resize((32, 32))
-                r, g, b, a = img.split()
-                argb_bytes = Image.merge('RGBA', (a, r, g, b)).tobytes()
-                return [(32, 32, argb_bytes)]
-        except Exception:
-            pass
-        return []
-
-    def is_running(self):
-        return self._is_running
-
-    def start(self):
-        """Register StatusNotifierItem and DBusMenu on session D-Bus"""
-        if self._is_running:
-            return
-        
-        try:
-            self.bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
-            if not self.bus:
-                return
-
-            node_info = Gio.DBusNodeInfo.new_for_xml(_SNI_DBUS_XML)
-            sni_iface = node_info.interfaces[0]
-            menu_iface = node_info.interfaces[1]
-
-            self.sni_reg_id = _register_dbus_object(
-                self.bus,
-                '/StatusNotifierItem',
-                sni_iface,
-                self._on_sni_method_call,
-                self._on_sni_get_property,
-                None
-            )
-
-            self.menu_reg_id = _register_dbus_object(
-                self.bus,
-                '/StatusNotifierMenu',
-                menu_iface,
-                self._on_menu_method_call,
-                self._on_menu_get_property,
-                None
-            )
-
-            # Register with StatusNotifierWatcher
-            self.bus.call(
-                'org.kde.StatusNotifierWatcher',
-                '/StatusNotifierWatcher',
-                'org.kde.StatusNotifierWatcher',
-                'RegisterStatusNotifierItem',
-                GLib.Variant('(s)', ('/StatusNotifierItem',)),
-                None,
-                Gio.DBusCallFlags.NONE,
-                -1,
-                None,
-                None
-            )
-            try:
-                self.bus.emit_signal(
-                    None,
-                    '/StatusNotifierMenu',
-                    'com.canonical.dbusmenu',
-                    'LayoutUpdated',
-                    GLib.Variant('(ui)', (1, 0))
-                )
-            except Exception:
-                pass
-            self._is_running = True
-            print("✅ Native StatusNotifierItem registered on D-Bus (Left-click: toggle, Right-click: menu)")
-        except Exception as e:
-            print(f"❌ Failed to start StatusNotifierItem tray: {e}")
-
-    def stop(self):
-        self.cleanup()
-
-    def cleanup(self):
-        """Unregister D-Bus objects and clean up tray"""
-        if not self._is_running:
-            return
-        try:
-            if self.bus:
-                if self.sni_reg_id:
-                    self.bus.unregister_object(self.sni_reg_id)
-                    self.sni_reg_id = None
-                if self.menu_reg_id:
-                    self.bus.unregister_object(self.menu_reg_id)
-                    self.menu_reg_id = None
-            self._is_running = False
-            print("✅ StatusNotifierItem tray cleaned up")
-        except Exception as e:
-            print(f"⚠️ Error cleaning up tray: {e}")
-
-    def _on_sni_method_call(self, conn, sender, obj_path, iface_name, method_name, params, invocation):
-        if method_name in ('Activate', 'SecondaryActivate'):
-            # Direct left-click / middle-click: toggle window state immediately
-            GLib.idle_add(self.on_toggle_window)
-            invocation.return_value(None)
-        elif method_name == 'ContextMenu':
-            # Right-click: handled by host via dbusmenu
-            invocation.return_value(None)
-        elif method_name == 'Scroll':
-            invocation.return_value(None)
-        else:
-            invocation.return_value(None)
-
-    def _on_sni_get_property(self, conn, sender, obj_path, iface_name, prop_name):
-        if prop_name == 'Category':
-            return GLib.Variant('s', 'ApplicationStatus')
-        elif prop_name == 'Id':
-            return GLib.Variant('s', 'romm-retroarch-sync')
-        elif prop_name == 'Title':
-            return GLib.Variant('s', 'RomM - RetroArch Sync')
-        elif prop_name == 'Status':
-            return GLib.Variant('s', 'Active')
-        elif prop_name == 'WindowId':
-            return GLib.Variant('i', 0)
-        elif prop_name == 'IconName':
-            return GLib.Variant('s', 'romm_icon' if self.icon_path else 'application-x-executable')
-        elif prop_name == 'IconThemePath':
-            return GLib.Variant('s', self.icon_dir)
-        elif prop_name == 'IconPixmap':
-            if self.icon_pixmap_data:
-                pix_variants = [
-                    GLib.Variant('(iiay)', (w, h, bytearray(data)))
-                    for w, h, data in self.icon_pixmap_data
-                ]
-                return GLib.Variant('a(iiay)', pix_variants)
-            return GLib.Variant('a(iiay)', [])
-        elif prop_name == 'ItemIsMenu':
-            # Critical: False ensures left-click triggers Activate() rather than opening menu
-            return GLib.Variant('b', False)
-        elif prop_name == 'Menu':
-            return GLib.Variant('o', '/StatusNotifierMenu')
-        return None
-
-    def _get_menu_item_props(self, item_id):
-        if item_id == 0:
-            return {
-                'children-display': GLib.Variant('s', 'submenu')
-            }
-        elif item_id == 1:
-            return {
-                'label': GLib.Variant('s', 'Show/Hide Window'),
-                'enabled': GLib.Variant('b', True),
-                'visible': GLib.Variant('b', True),
-                'type': GLib.Variant('s', 'standard')
-            }
-        elif item_id == 2:
-            return {
-                'label': GLib.Variant('s', 'Quit'),
-                'enabled': GLib.Variant('b', True),
-                'visible': GLib.Variant('b', True),
-                'type': GLib.Variant('s', 'standard')
-            }
-        return {}
-
-    def _on_menu_method_call(self, conn, sender, obj_path, iface_name, method_name, params, invocation):
-        try:
-            if method_name == 'GetLayout':
-                item1 = GLib.Variant('(ia{sv}av)', (1, self._get_menu_item_props(1), []))
-                item2 = GLib.Variant('(ia{sv}av)', (2, self._get_menu_item_props(2), []))
-                root_props = {'children-display': GLib.Variant('s', 'submenu')}
-                root = (0, root_props, [GLib.Variant('v', item1), GLib.Variant('v', item2)])
-                invocation.return_value(GLib.Variant('(u(ia{sv}av))', (1, root)))
-            elif method_name == 'AboutToShow':
-                invocation.return_value(GLib.Variant('(b)', (False,)))
-            elif method_name == 'AboutToShowGroup':
-                invocation.return_value(GLib.Variant('(aiai)', ([], [])))
-            elif method_name == 'GetGroupProperties':
-                ids, prop_names = params.unpack()
-                res = []
-                for item_id in ids:
-                    props = self._get_menu_item_props(item_id)
-                    if props:
-                        res.append((item_id, props))
-                invocation.return_value(GLib.Variant('(a(ia{sv}))', (res,)))
-            elif method_name == 'GetProperty':
-                item_id, prop_name = params.unpack()
-                props = self._get_menu_item_props(item_id)
-                if prop_name in props:
-                    invocation.return_value(GLib.Variant('(v)', (props[prop_name],)))
-                else:
-                    invocation.return_value(GLib.Variant('(v)', (GLib.Variant('s', ''),)))
-            elif method_name == 'Event':
-                menu_id, event_id, data, ts = params.unpack()
-                if event_id == 'clicked':
-                    if menu_id == 1:
-                        GLib.idle_add(self.on_toggle_window)
-                    elif menu_id == 2:
-                        GLib.idle_add(self.on_quit)
-                invocation.return_value(None)
-            elif method_name == 'EventGroup':
-                invocation.return_value(GLib.Variant('(ai)', ([],)))
-            else:
-                invocation.return_value(None)
-        except Exception as e:
-            print(f"❌ DBusMenu error in {method_name}: {e}")
-            invocation.return_value(None)
-
-    def _on_menu_get_property(self, conn, sender, obj_path, iface_name, prop_name):
-        if prop_name == 'Version':
-            return GLib.Variant('u', 3)
-        elif prop_name == 'Status':
-            return GLib.Variant('s', 'normal')
-        elif prop_name == 'TextDirection':
-            return GLib.Variant('s', 'ltr')
-        elif prop_name == 'IconThemePath':
-            return GLib.Variant('as', [])
-        return None
-
-    def on_toggle_window(self):
-        """Toggle window visibility and state"""
-        try:
-            surface = self.window.get_surface() if hasattr(self.window, 'get_surface') else None
-            is_minimized = False
-            if surface and hasattr(surface, 'get_state'):
-                try:
-                    state = surface.get_state()
-                    min_flag = getattr(Gdk.ToplevelState, 'MINIMIZED', None) if hasattr(Gdk, 'ToplevelState') else None
-                    if min_flag and (state & min_flag):
-                        is_minimized = True
-                except Exception:
-                    pass
-
-            is_visible = self.window.get_visible() if hasattr(self.window, 'get_visible') else self.window.is_visible()
-
-            # If hidden or minimized: show and restore window
-            if not is_visible or is_minimized:
-                self.window._is_restoring = True
-                self.window.set_visible(True)
-                if hasattr(self.window, 'unminimize'):
-                    try:
-                        self.window.unminimize()
-                    except Exception:
-                        pass
-                self.window.present()
-                def _reset_restoring():
-                    self.window._is_restoring = False
-                    return False
-                GLib.timeout_add(300, _reset_restoring)
-            else:
-                # Window is currently visible on screen: hide it to tray!
-                self.window.set_visible(False)
-        except Exception as e:
-            print(f"❌ Window toggle error: {e}")
-
-    def on_quit(self):
-        """Quit application"""
-        try:
-            self.cleanup()
-            self.app.quit()
-        except Exception as e:
-            print(f"❌ Quit error: {e}")
-        
 class GameItem(GObject.Object):
     def __init__(self, game_data):
         super().__init__()
@@ -8759,10 +8369,6 @@ class SyncWindow(Gtk.ApplicationWindow):
         collapse_act.connect("activate", lambda a, p: self.library_section.on_collapse_all(None) if hasattr(self, 'library_section') else None)
         self.add_action(collapse_act)
 
-        tray_enabled = self.settings.get('System', 'tray_icon_enabled', fallback='true') == 'true'
-        self.tray = TrayIcon(self.get_application(), self, auto_start=tray_enabled)
-        self.setup_minimize_to_tray()
-
         self._pending_refresh = False
         
         # Initialize RetroArch info and attempt to load games list
@@ -8800,28 +8406,6 @@ class SyncWindow(Gtk.ApplicationWindow):
         GLib.timeout_add(2000, setup_periodic_cleanup)
         # ADD AUTO-CONNECT LOGIC:
         GLib.timeout_add(50, self.try_auto_connect)
-
-    def setup_minimize_to_tray(self):
-        """Listen to window minimize state changes to support minimize to tray"""
-        def on_window_realize(win):
-            surface = win.get_surface()
-            if surface and hasattr(surface, 'get_state'):
-                def on_surface_state_changed(surf, pspec):
-                    try:
-                        if getattr(win, '_is_restoring', False):
-                            return
-                        state = surf.get_state()
-                        minimized_flag = getattr(Gdk.ToplevelState, 'MINIMIZED', None) if hasattr(Gdk, 'ToplevelState') else None
-                        if minimized_flag and (state & minimized_flag):
-                            tray_enabled = self.settings.get('System', 'tray_icon_enabled', fallback='true') == 'true'
-                            minimize_to_tray = self.settings.get('System', 'minimize_to_tray', fallback='false') == 'true'
-                            if tray_enabled and minimize_to_tray:
-                                win.set_visible(False)
-                    except Exception:
-                        pass
-                surface.connect('notify::state', on_surface_state_changed)
-
-        self.connect('realize', on_window_realize)
 
     def create_status_dot(self, color='grey', size=10):
         """Create a Cairo-drawn status dot widget
@@ -9787,7 +9371,7 @@ class SyncWindow(Gtk.ApplicationWindow):
             transient_for=self,
             application_name="RomM - RetroArch Sync",
             application_icon="com.romm.retroarch.sync",
-            version="1.6",
+            version="1.7",
             developer_name='Hector Eduardo "Covin" Silveri',
             copyright="© 2025-2026 Hector Eduardo Silveri",
             license_type=Gtk.License.GPL_3_0
@@ -9908,8 +9492,9 @@ class SyncWindow(Gtk.ApplicationWindow):
                 icon_theme = Gtk.IconTheme.get_for_display(self.get_display())
                 icon_theme.add_search_path(str(temp_dir))
                 
-                # Set as default icon for all windows
-                Gtk.Window.set_default_icon_name('com.romm.retroarch.sync')
+                # Set icon on current window
+                if hasattr(self, 'set_icon_name'):
+                    self.set_icon_name('com.romm.retroarch.sync')
                 
                 print("✅ Set application icon via GTK4 method")
                     
@@ -10370,6 +9955,14 @@ class SyncWindow(Gtk.ApplicationWindow):
         self.connection_status_dot = self.create_status_dot('grey', size=15)
         self.connection_status_dot.set_margin_end(8)
         self.connection_expander.add_prefix(self.connection_status_dot)
+
+        # Add full resync button with circular arrow icon to the left of the slider
+        self.resync_btn = Gtk.Button.new_from_icon_name("view-refresh-symbolic")
+        self.resync_btn.set_valign(Gtk.Align.CENTER)
+        self.resync_btn.set_tooltip_text("Full Resync with RomM Server")
+        self.resync_btn.add_css_class("flat")
+        self.resync_btn.connect("clicked", lambda b: self.refresh_games_list(force_full_refresh=True))
+        self.connection_expander.add_suffix(self.resync_btn)
 
         # Add toggle switch as suffix to enable/disable connection
         self.connection_enable_switch = Gtk.Switch()
@@ -10841,7 +10434,7 @@ class SyncWindow(Gtk.ApplicationWindow):
             device_name = self.settings.get('Device', 'device_name', socket.gethostname())
             platform = self.settings.get('Device', 'device_platform', 'Linux')
             client = self.settings.get('Device', 'client', 'RomM-RetroArch-Sync')
-            client_version = self.settings.get('Device', 'client_version', '1.6')
+            client_version = self.settings.get('Device', 'client_version', '1.7')
 
             device_id = self.romm_client.register_device(
                 device_name=device_name,
@@ -11608,62 +11201,6 @@ class SyncWindow(Gtk.ApplicationWindow):
 
         config_group.add(cores_expander)
 
-        # System Tray & Background group
-        tray_group = Adw.PreferencesGroup()
-        tray_group.set_title("System Tray &amp; Background")
-
-        tray_enabled = self.settings.get('System', 'tray_icon_enabled', fallback='true') == 'true'
-
-        tray_switch_row = Adw.SwitchRow()
-        tray_switch_row.set_title("Taskbar / Tray Icon")
-        tray_switch_row.set_subtitle("Show application icon in the system tray")
-        tray_switch_row.set_active(tray_enabled)
-        tray_group.add(tray_switch_row)
-
-        # Minimize to tray checkbox row
-        minimize_row = Adw.ActionRow()
-        minimize_row.set_title("Minimize to Tray")
-        minimize_row.set_subtitle("Hide window to the system tray when minimized")
-        minimize_chk = Gtk.CheckButton()
-        minimize_chk.set_valign(Gtk.Align.CENTER)
-        minimize_chk.set_active(self.settings.get('System', 'minimize_to_tray', fallback='false') == 'true')
-        minimize_row.add_suffix(minimize_chk)
-        minimize_row.set_activatable_widget(minimize_chk)
-        minimize_row.set_visible(tray_enabled)
-        tray_group.add(minimize_row)
-
-        # Close to tray checkbox row
-        close_row = Adw.ActionRow()
-        close_row.set_title("Close to Tray")
-        close_row.set_subtitle("Keep application running in system tray when window is closed")
-        close_chk = Gtk.CheckButton()
-        close_chk.set_valign(Gtk.Align.CENTER)
-        close_chk.set_active(self.settings.get('System', 'close_to_tray', fallback='true') == 'true')
-        close_row.add_suffix(close_chk)
-        close_row.set_activatable_widget(close_chk)
-        close_row.set_visible(tray_enabled)
-        tray_group.add(close_row)
-
-        def on_tray_switch_changed(row, _):
-            is_active = row.get_active()
-            self.settings.set('System', 'tray_icon_enabled', 'true' if is_active else 'false')
-            minimize_row.set_visible(is_active)
-            close_row.set_visible(is_active)
-            if hasattr(self, 'tray') and self.tray:
-                if is_active:
-                    self.tray.start()
-                else:
-                    self.tray.stop()
-
-        def on_minimize_chk_toggled(chk):
-            self.settings.set('System', 'minimize_to_tray', 'true' if chk.get_active() else 'false')
-
-        def on_close_chk_toggled(chk):
-            self.settings.set('System', 'close_to_tray', 'true' if chk.get_active() else 'false')
-
-        tray_switch_row.connect('notify::active', on_tray_switch_changed)
-        minimize_chk.connect('toggled', on_minimize_chk_toggled)
-        close_chk.connect('toggled', on_close_chk_toggled)
 
         # Advanced Tools
         advanced_group = Adw.PreferencesGroup()
@@ -11711,7 +11248,6 @@ class SyncWindow(Gtk.ApplicationWindow):
         page = Adw.PreferencesPage()
         page.add(log_group)
         page.add(config_group)
-        page.add(tray_group)
         page.add(advanced_group)
         dialog.add(page)
 
@@ -11720,25 +11256,21 @@ class SyncWindow(Gtk.ApplicationWindow):
     def log_message(self, message):
         """Add message to log view with buffer limit"""
 
-        # Check if debug mode is enabled
-        debug_mode = self.settings.get('System', 'debug_mode') == 'true'
+        # Always write all log messages (including TRAY DEBUG) to debug.log file
+        try:
+            log_file = Path.home() / '.config' / 'romm-retroarch-sync' / 'debug.log'
+            log_file.parent.mkdir(parents=True, exist_ok=True)
+            with open(log_file, 'a', encoding='utf-8') as f:
+                import datetime
+                timestamp = datetime.datetime.now().strftime("%H:%M:%S")
+                f.write(f"[{timestamp}] {message}\n")
+        except Exception:
+            pass
 
-        # Skip [DEBUG] messages if debug mode is disabled
+        # Check if debug mode is enabled for UI buffer
+        debug_mode = self.settings.get('System', 'debug_mode') == 'true'
         if message.startswith('[DEBUG]') and not debug_mode:
             return
-
-        # Write to file only if debug mode is enabled
-        if debug_mode:
-            try:
-                log_file = Path.home() / '.config' / 'romm-retroarch-sync' / 'debug.log'
-                log_file.parent.mkdir(parents=True, exist_ok=True)
-                with open(log_file, 'a', encoding='utf-8') as f:
-                    import datetime
-                    timestamp = datetime.datetime.now().strftime("%H:%M:%S")
-                    f.write(f"[{timestamp}] {message}\n")
-            except Exception:
-                pass
-
         def update_ui():
             try:
                 buffer = self.log_view.get_buffer()
@@ -13197,22 +12729,14 @@ class SyncWindow(Gtk.ApplicationWindow):
         dialog.present()
 
     def on_window_close_request(self, _window):
-        """Overrides the default window close action.
-        
-        If tray icon and close-to-tray are enabled, hides the window to the tray.
-        Otherwise, cleans up and allows the application to exit normally.
-        """
-        tray_enabled = self.settings.get('System', 'tray_icon_enabled', fallback='true') == 'true'
-        close_to_tray = self.settings.get('System', 'close_to_tray', fallback='true') == 'true'
-
-        if tray_enabled and close_to_tray:
-            self.set_visible(False)
-            # Return True to prevent the window from being destroyed
-            return True
-        else:
-            if hasattr(self, 'tray') and self.tray:
-                self.tray.cleanup()
-            return False
+        """Quit application when window is closed via X"""
+        try:
+            app = self.get_application()
+            if app:
+                app.quit()
+        except Exception:
+            pass
+        return False
 
     def cancel_download(self, rom_id):
         """Cancel an in-progress download. If part of a bulk operation, cancels all downloads.

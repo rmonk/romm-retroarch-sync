@@ -8,7 +8,7 @@ A modern, desktop application for managing your retro game library by syncing RO
 
 <div align="center">
 
-[![Download](https://img.shields.io/github/v/release/rmonk/romm-retroarch-sync?style=for-the-badge&logo=github&label=Download%20v1.6)](https://github.com/rmonk/romm-retroarch-sync/releases)
+[![Download](https://img.shields.io/github/v/release/rmonk/romm-retroarch-sync?style=for-the-badge&logo=github&label=Download%20v1.7)](https://github.com/rmonk/romm-retroarch-sync/releases)
 
 **[All Releases](https://github.com/rmonk/romm-retroarch-sync/releases)** • **[Issues](https://github.com/rmonk/romm-retroarch-sync/issues)**
 
@@ -35,26 +35,26 @@ A modern, desktop application for managing your retro game library by syncing RO
 
 ### Download AppImage (Recommended)
 
-1. Download the latest `RomM-RetroArch-Sync-v1.6.AppImage` from [Releases](https://github.com/rmonk/romm-retroarch-sync/releases)
+1. Download the latest `RomM-RetroArch-Sync-v1.7.AppImage` from [Releases](https://github.com/rmonk/romm-retroarch-sync/releases)
 2. Make it executable:
    ```bash
-   chmod +x RomM-RetroArch-Sync-v1.6.AppImage
+   chmod +x RomM-RetroArch-Sync-v1.7.AppImage
    ```
 3. Run:
    ```bash
-   ./RomM-RetroArch-Sync-v1.6.AppImage
+   ./RomM-RetroArch-Sync-v1.7.AppImage
    ```
 
 ### Command Line Options
 
 ```bash
 # Specify desktop environment style manually
-./RomM-RetroArch-Sync-v1.6.AppImage --de=kde
-./RomM-RetroArch-Sync-v1.6.AppImage --de=gnome
-./RomM-RetroArch-Sync-v1.6.AppImage --de=steamos
+./RomM-RetroArch-Sync-v1.7.AppImage --de=kde
+./RomM-RetroArch-Sync-v1.7.AppImage --de=gnome
+./RomM-RetroArch-Sync-v1.7.AppImage --de=steamos
 
 # Start minimized to system tray
-./RomM-RetroArch-Sync-v1.6.AppImage --minimized
+./RomM-RetroArch-Sync-v1.7.AppImage --minimized
 ```
 
 ## 🔧 Configuration

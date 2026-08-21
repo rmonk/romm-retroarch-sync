@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.7] - 2026-08-21
+
+### Added
+- Added full resync circular arrow button to RomM Connection settings row.
+
+### Fixed
+- Fixed window close handler so app exits cleanly when window manager 'X' is clicked.
+- Cleaned up system tray sidecar components.
+
 ## [1.5] - 2026-04-03
 
 ### Updated

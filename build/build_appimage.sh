@@ -9,7 +9,7 @@ PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
 echo "📁 Project root: $PROJECT_ROOT"
 
-VERSION="${VERSION:-1.6}"
+VERSION="${VERSION:-1.7}"
 APPIMAGE_NAME="RomM-RetroArch-Sync-v${VERSION}.AppImage"
 
 # Define paths
@@ -262,7 +262,7 @@ cat > "$APPDIR/usr/share/metainfo/com.romm.retroarch.sync.appdata.xml" << EOF
   <releases>
     <release version="${VERSION}" date="2026-06-23">
       <description>
-        <p>Version 1.6 update with improvements and bugfixes.</p>
+        <p>Version 1.7 update with full resync button and window management fixes.</p>
       </description>
     </release>
   </releases>
