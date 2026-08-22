@@ -113,7 +113,8 @@ class MockAdw:
             if widget:
                 self.append(widget)
 
-    class ActionRow(Gtk.Box):
+    class _RowBase(Gtk.Box):
+        """Standard base class for mock Adw preference rows with prefix, title, and suffix containers."""
         def __init__(self, **kwargs):
             super().__init__(orientation=Gtk.Orientation.HORIZONTAL, **kwargs)
             self.set_spacing(12)
@@ -121,7 +122,7 @@ class MockAdw:
             self.set_margin_bottom(6)
             self.set_margin_start(12)
             self.set_margin_end(12)
-            
+
             self._prefix_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
             self.append(self._prefix_box)
 
@@ -131,7 +132,6 @@ class MockAdw:
 
             self._title_label = None
             self._subtitle_label = None
-            self._child = None
 
             self._suffix_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
             self.append(self._suffix_box)
@@ -165,6 +165,11 @@ class MockAdw:
         def add_suffix(self, widget):
             self._suffix_box.append(widget)
 
+    class ActionRow(_RowBase):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            self._child = None
+
         def set_child(self, child):
             if self._child:
                 self._suffix_box.remove(self._child)
@@ -178,42 +183,12 @@ class MockAdw:
         def set_activatable_widget(self, widget):
             pass
 
-    class SwitchRow(Gtk.Box):
+    class SwitchRow(_RowBase):
         def __init__(self, **kwargs):
-            super().__init__(orientation=Gtk.Orientation.HORIZONTAL, **kwargs)
-            self.set_spacing(12)
-            self.set_margin_top(6)
-            self.set_margin_bottom(6)
-            self.set_margin_start(12)
-            self.set_margin_end(12)
-            
-            self._title_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-            self._title_box.set_hexpand(True)
-            self.append(self._title_box)
-
-            self._title_label = None
-            self._subtitle_label = None
-
+            super().__init__(**kwargs)
             self.switch = Gtk.Switch()
             self.switch.set_valign(Gtk.Align.CENTER)
-            self.append(self.switch)
-
-        def set_title(self, title):
-            if self._title_label is None:
-                self._title_label = Gtk.Label(label=title)
-                self._title_label.set_halign(Gtk.Align.START)
-                self._title_box.append(self._title_label)
-            else:
-                self._title_label.set_text(title)
-
-        def set_subtitle(self, subtitle):
-            if self._subtitle_label is None:
-                self._subtitle_label = Gtk.Label(label=subtitle)
-                self._subtitle_label.set_halign(Gtk.Align.START)
-                self._subtitle_label.add_css_class("dim-label")
-                self._title_box.append(self._subtitle_label)
-            else:
-                self._subtitle_label.set_text(subtitle)
+            self.add_suffix(self.switch)
 
         def get_active(self):
             return self.switch.get_active()
@@ -229,42 +204,18 @@ class MockAdw:
                 return self.switch.connect('notify::active', callback)
             return super().connect(signal_name, callback)
 
-    class EntryRow(Gtk.Box):
+    class EntryRow(_RowBase):
         def __init__(self, **kwargs):
-            super().__init__(orientation=Gtk.Orientation.HORIZONTAL, **kwargs)
-            self.set_spacing(12)
-            self.set_margin_top(6)
-            self.set_margin_bottom(6)
-            self.set_margin_start(12)
-            self.set_margin_end(12)
-            
-            self._prefix_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-            self.append(self._prefix_box)
-
-            self._title_label = None
-            
+            super().__init__(**kwargs)
             self.entry = Gtk.Entry()
             self.entry.set_hexpand(True)
             self.entry.set_valign(Gtk.Align.CENTER)
-            self.append(self.entry)
-
-            self._suffix_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-            self.append(self._suffix_box)
+            self._title_box.append(self.entry)
 
         def set_title(self, title):
-            if self._title_label is None:
-                self._title_label = Gtk.Label(label=title)
-                self._title_label.set_halign(Gtk.Align.START)
+            super().set_title(title)
+            if self._title_label:
                 self._title_label.set_valign(Gtk.Align.CENTER)
-                self.insert_child_after(self._title_label, self._prefix_box)
-            else:
-                self._title_label.set_text(title)
-
-        def add_prefix(self, widget):
-            self._prefix_box.append(widget)
-
-        def add_suffix(self, widget):
-            self._suffix_box.append(widget)
 
         def get_text(self):
             return self.entry.get_text()
@@ -277,8 +228,7 @@ class MockAdw:
                 return self.entry.connect('activate', callback)
             elif signal_name in ('changed', 'notify::text'):
                 return self.entry.connect('changed', callback)
-            else:
-                return super().connect(signal_name, callback)
+            return super().connect(signal_name, callback)
 
     class PasswordEntryRow(EntryRow):
         def __init__(self, **kwargs):
@@ -290,62 +240,32 @@ class MockAdw:
             super().__init__(orientation=Gtk.Orientation.VERTICAL, **kwargs)
             self.set_spacing(0)
 
-            # Header box to hold title, prefix, and suffix
-            self.header_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
-            self.header_box.set_spacing(6)
-            self.header_box.set_margin_top(6)
-            self.header_box.set_margin_bottom(6)
-            self.header_box.set_margin_start(12)
-            self.header_box.set_margin_end(12)
-
-            # Prefix box (left side)
-            self.prefix_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-            self.header_box.append(self.prefix_box)
-
-            # Title and subtitle box (center)
-            self.title_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-            self.title_box.set_hexpand(True)
-            self.header_box.append(self.title_box)
-
-            # Suffix box (right side)
-            self.suffix_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-            self.header_box.append(self.suffix_box)
+            # Header row with prefix, title, and suffix
+            self._header = MockAdw._RowBase()
 
             # Create expander with custom header
             self.expander = Gtk.Expander()
-            self.expander.set_label_widget(self.header_box)
+            self.expander.set_label_widget(self._header)
             self.append(self.expander)
 
             # Content box
             self.content_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
             self.expander.set_child(self.content_box)
 
-            self._title_label = None
-            self._subtitle_label = None
-
         def set_title(self, title):
-            if self._title_label is None:
-                self._title_label = Gtk.Label()
-                self._title_label.set_halign(Gtk.Align.START)
-                self.title_box.append(self._title_label)
-            self._title_label.set_text(title)
+            self._header.set_title(title)
 
         def set_subtitle(self, subtitle):
-            if self._subtitle_label is None:
-                self._subtitle_label = Gtk.Label()
-                self._subtitle_label.set_halign(Gtk.Align.START)
-                self._subtitle_label.add_css_class("dim-label")
-                self.title_box.append(self._subtitle_label)
-            self._subtitle_label.set_text(subtitle)
+            self._header.set_subtitle(subtitle)
 
         def get_subtitle(self):
-            return self._subtitle_label.get_text() if self._subtitle_label else ""
+            return self._header.get_subtitle()
 
         def add_prefix(self, widget):
-            self.prefix_box.append(widget)
+            self._header.add_prefix(widget)
 
         def add_suffix(self, widget):
-            self.suffix_box.append(widget)
+            self._header.add_suffix(widget)
 
         def add_row(self, row):
             self.content_box.append(row)
@@ -367,42 +287,12 @@ class MockAdw:
                 return self.expander.connect(signal_name, callback)
             return super().connect(signal_name, callback)
 
-    class SpinRow(Gtk.Box):
+    class SpinRow(_RowBase):
         def __init__(self, **kwargs):
-            super().__init__(orientation=Gtk.Orientation.HORIZONTAL, **kwargs)
-            self.set_spacing(12)
-            self.set_margin_top(6)
-            self.set_margin_bottom(6)
-            self.set_margin_start(12)
-            self.set_margin_end(12)
-            
-            self._title_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-            self._title_box.set_hexpand(True)
-            self.append(self._title_box)
-
-            self._title_label = None
-            self._subtitle_label = None
-
+            super().__init__(**kwargs)
             self.spin = Gtk.SpinButton()
             self.spin.set_valign(Gtk.Align.CENTER)
-            self.append(self.spin)
-
-        def set_title(self, title):
-            if self._title_label is None:
-                self._title_label = Gtk.Label(label=title)
-                self._title_label.set_halign(Gtk.Align.START)
-                self._title_box.append(self._title_label)
-            else:
-                self._title_label.set_text(title)
-
-        def set_subtitle(self, subtitle):
-            if self._subtitle_label is None:
-                self._subtitle_label = Gtk.Label(label=subtitle)
-                self._subtitle_label.set_halign(Gtk.Align.START)
-                self._subtitle_label.add_css_class("dim-label")
-                self._title_box.append(self._subtitle_label)
-            else:
-                self._subtitle_label.set_text(subtitle)
+            self.add_suffix(self.spin)
 
         def get_value(self):
             return self.spin.get_value()
@@ -421,42 +311,12 @@ class MockAdw:
                 return self.spin.connect('value-changed', callback)
             return super().connect(signal_name, callback)
 
-    class ComboRow(Gtk.Box):
+    class ComboRow(_RowBase):
         def __init__(self, **kwargs):
-            super().__init__(orientation=Gtk.Orientation.HORIZONTAL, **kwargs)
-            self.set_spacing(12)
-            self.set_margin_top(6)
-            self.set_margin_bottom(6)
-            self.set_margin_start(12)
-            self.set_margin_end(12)
-            
-            self._title_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-            self._title_box.set_hexpand(True)
-            self.append(self._title_box)
-
-            self._title_label = None
-            self._subtitle_label = None
-
+            super().__init__(**kwargs)
             self.combo = Gtk.DropDown()
             self.combo.set_valign(Gtk.Align.CENTER)
-            self.append(self.combo)
-
-        def set_title(self, title):
-            if self._title_label is None:
-                self._title_label = Gtk.Label(label=title)
-                self._title_label.set_halign(Gtk.Align.START)
-                self._title_box.append(self._title_label)
-            else:
-                self._title_label.set_text(title)
-
-        def set_subtitle(self, subtitle):
-            if self._subtitle_label is None:
-                self._subtitle_label = Gtk.Label(label=subtitle)
-                self._subtitle_label.set_halign(Gtk.Align.START)
-                self._subtitle_label.add_css_class("dim-label")
-                self._title_box.append(self._subtitle_label)
-            else:
-                self._subtitle_label.set_text(subtitle)
+            self.add_suffix(self.combo)
 
         def set_model(self, model):
             self.combo.set_model(model)
@@ -479,7 +339,6 @@ class MockAdw:
             self._heading = heading
             self._body = body
             self._responses = {}
-            self._response_callbacks = {}
             self._close_response = None
 
             box = self.get_content_area() if hasattr(self, 'get_content_area') else self
@@ -526,7 +385,8 @@ class MockAdw:
             super().__init__(**kwargs)
 
         def set_website(self, url):
-            self.set_website_url(url) if hasattr(self, 'set_website_url') else None
+            if hasattr(self, 'set_website_url'):
+                self.set_website_url(url)
 
         def set_issue_url(self, url):
             pass

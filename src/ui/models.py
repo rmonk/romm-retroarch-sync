@@ -1,9 +1,9 @@
 import os
 import sys
+import time
 from pathlib import Path
 from gi.repository import GObject, Gio, GLib, Gtk
 
-from romm_sync_engine.sync_core import *
 
 class GameItem(GObject.Object):
     def __init__(self, game_data):

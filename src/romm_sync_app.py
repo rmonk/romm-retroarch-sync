@@ -48,7 +48,6 @@ from ui.compat import (
     detect_desktop_environment, get_de_custom_css
 )
 from ui.window import SyncWindow
-from romm_sync_engine.sync_core import *
 
 class SyncApp(Adw.Application):
     """Main application class"""
