@@ -191,6 +191,11 @@ class MockAdw:
         def set_active(self, active):
             self.switch.set_active(active)
 
+        def connect(self, signal_name, callback):
+            if signal_name == 'notify::active':
+                return self.switch.connect('notify::active', callback)
+            return super().connect(signal_name, callback)
+
     class EntryRow(Gtk.Box):
         def __init__(self):
             super().__init__(orientation=Gtk.Orientation.VERTICAL)
@@ -290,6 +295,26 @@ class MockAdw:
         def add_row(self, row):
             self.content_box.append(row)
 
+        def set_expanded(self, expanded):
+            self.expander.set_expanded(expanded)
+
+        def get_expanded(self):
+            return self.expander.get_expanded()
+
+        def set_enable_expansion(self, enable):
+            self.expander.set_sensitive(enable)
+
+        def get_enable_expansion(self):
+            return self.expander.get_sensitive()
+
+        def get_subtitle(self):
+            return self._subtitle_label.get_text() if self._subtitle_label else ""
+
+        def connect(self, signal_name, callback):
+            if signal_name in ('notify::expanded', 'notify::enable-expansion'):
+                return self.expander.connect(signal_name, callback)
+            return super().connect(signal_name, callback)
+
     class SpinRow(Gtk.Box):
         def __init__(self):
             super().__init__(orientation=Gtk.Orientation.HORIZONTAL)
@@ -338,6 +363,11 @@ class MockAdw:
 
         def set_adjustment(self, adjustment):
             self.spin.set_adjustment(adjustment)
+
+        def connect(self, signal_name, callback):
+            if signal_name in ('notify::value', 'value-changed'):
+                return self.spin.connect('value-changed', callback)
+            return super().connect(signal_name, callback)
 
     class ComboRow(Gtk.Box):
         def __init__(self):
