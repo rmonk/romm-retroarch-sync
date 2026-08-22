@@ -12,7 +12,7 @@ import urllib.request
 import urllib.parse
 
 from gi.repository import Gtk, Gdk, GLib, Gio, GObject, Pango
-from ui.compat import Adw, HAS_ADW
+from ui.compat import Adw, HAS_ADW, detect_desktop_environment, get_de_custom_css
 from ui.models import GameItem, DiscItem, PlatformItem, LibraryTreeModel
 from ui.library import EnhancedLibrarySection
 from romm_sync_engine.sync_core import *
