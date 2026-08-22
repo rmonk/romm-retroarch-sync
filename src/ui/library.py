@@ -6,6 +6,7 @@ import cairo
 import shutil
 import logging
 import threading
+import webbrowser
 from pathlib import Path
 from datetime import datetime
 

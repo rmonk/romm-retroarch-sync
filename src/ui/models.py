@@ -1,5 +1,6 @@
 import os
 import sys
+import time
 from pathlib import Path
 from gi.repository import GObject, Gio, GLib, Gtk
 
