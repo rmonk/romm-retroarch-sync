@@ -32,15 +32,40 @@ class MockAdw:
     class ApplicationWindow(Gtk.ApplicationWindow):
         pass
 
+    class Window(Gtk.Window):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+
+        def set_content(self, child):
+            self.set_child(child)
+
     class PreferencesWindow(Gtk.Window):
-        def __init__(self):
-            super().__init__()
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
             self.set_modal(True)
             self.set_default_size(800, 600)
+            self._main_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+            self._main_box.set_margin_top(12)
+            self._main_box.set_margin_bottom(12)
+            self._main_box.set_margin_start(12)
+            self._main_box.set_margin_end(12)
+            self.set_child(self._main_box)
+
+        def add(self, page):
+            self._main_box.append(page)
+
+        def set_content_width(self, width):
+            self.set_default_size(width, -1)
+
+        def set_content_height(self, height):
+            self.set_default_size(-1, height)
+
+    class PreferencesDialog(PreferencesWindow):
+        pass
 
     class PreferencesPage(Gtk.Box):
-        def __init__(self):
-            super().__init__(orientation=Gtk.Orientation.VERTICAL)
+        def __init__(self, **kwargs):
+            super().__init__(orientation=Gtk.Orientation.VERTICAL, **kwargs)
             self.set_margin_top(12)
             self.set_margin_bottom(12)
             self.set_margin_start(12)
@@ -48,135 +73,140 @@ class MockAdw:
             self.set_spacing(12)
 
         def add(self, child):
-            super().append(child)
+            self.append(child)
 
     class PreferencesGroup(Gtk.Box):
-        def __init__(self):
-            super().__init__(orientation=Gtk.Orientation.VERTICAL)
-            self.set_spacing(0)
+        def __init__(self, **kwargs):
+            super().__init__(orientation=Gtk.Orientation.VERTICAL, **kwargs)
+            self.set_spacing(4)
             self._title_label = None
 
         def set_title(self, title):
             if self._title_label is None:
                 self._title_label = Gtk.Label()
                 self._title_label.set_halign(Gtk.Align.START)
-                self._title_label.set_margin_top(12)
+                self._title_label.add_css_class("heading")
                 self._title_label.set_margin_bottom(6)
-                self._title_label.set_margin_start(12)
                 self.prepend(self._title_label)
-            # Handle HTML entities in title - decode and escape for markup
-            import html as html_module
-            decoded_title = html_module.unescape(title)
-            escaped_title = decoded_title.replace('&', '&amp;')
-            try:
-                self._title_label.set_markup(f"<b>{escaped_title}</b>")
-            except Exception:
-                # Fallback to plain text if markup fails
-                self._title_label.set_text(decoded_title)
+            self._title_label.set_text(title)
 
         def add(self, child):
-            super().append(child)
+            self.append(child)
 
     class HeaderBar(Gtk.HeaderBar):
         pass
 
     class ToolbarView(Gtk.Box):
-        def __init__(self):
-            super().__init__(orientation=Gtk.Orientation.VERTICAL)
-            self._header = None
+        def __init__(self, **kwargs):
+            super().__init__(orientation=Gtk.Orientation.VERTICAL, **kwargs)
+            self._top_bars = []
             self._content = None
 
-        def add_top_bar(self, header):
-            if self._header is None:
-                self._header = header
-                self.prepend(header)
-            else:
-                # Replace existing header
-                self.remove(self._header)
-                self._header = header
-                self.prepend(header)
+        def add_top_bar(self, widget):
+            self._top_bars.append(widget)
+            self.prepend(widget)
 
-        def set_content(self, content):
-            if self._content is not None:
+        def set_content(self, widget):
+            if self._content:
                 self.remove(self._content)
-            self._content = content
-            self.append(content)
+            self._content = widget
+            if widget:
+                self.append(widget)
 
     class ActionRow(Gtk.Box):
-        def __init__(self):
-            super().__init__(orientation=Gtk.Orientation.HORIZONTAL)
+        def __init__(self, **kwargs):
+            super().__init__(orientation=Gtk.Orientation.HORIZONTAL, **kwargs)
             self.set_spacing(12)
             self.set_margin_top(6)
             self.set_margin_bottom(6)
             self.set_margin_start(12)
             self.set_margin_end(12)
-            self._title_box = None
+            
+            self._prefix_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+            self.append(self._prefix_box)
+
+            self._title_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+            self._title_box.set_hexpand(True)
+            self.append(self._title_box)
+
             self._title_label = None
             self._subtitle_label = None
+            self._child = None
+
+            self._suffix_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+            self.append(self._suffix_box)
 
         def set_title(self, title):
-            if self._title_box is None:
-                self._title_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-                self._title_box.set_hexpand(True)
-                self._title_label = Gtk.Label(label=title)
+            if self._title_label is None:
+                self._title_label = Gtk.Label()
                 self._title_label.set_halign(Gtk.Align.START)
                 self._title_box.append(self._title_label)
-                self.prepend(self._title_box)
-            else:
-                self._title_label.set_text(title)
+            self._title_label.set_text(title)
 
         def set_subtitle(self, subtitle):
-            if self._title_box is None:
-                self.set_title("")  # Initialize title box
             if self._subtitle_label is None:
-                self._subtitle_label = Gtk.Label(label=subtitle)
+                self._subtitle_label = Gtk.Label()
                 self._subtitle_label.set_halign(Gtk.Align.START)
                 self._subtitle_label.add_css_class("dim-label")
                 self._title_box.append(self._subtitle_label)
-            else:
-                self._subtitle_label.set_text(subtitle)
+            self._subtitle_label.set_text(subtitle)
 
-        def add_suffix(self, widget):
-            self.append(widget)
+        def get_subtitle(self):
+            return self._subtitle_label.get_text() if self._subtitle_label else ""
+
+        def set_subtitle_lines(self, lines):
+            if self._subtitle_label:
+                self._subtitle_label.set_lines(lines)
+                self._subtitle_label.set_wrap(True)
 
         def add_prefix(self, widget):
-            if self._title_box is None:
-                self.set_title("")  # Initialize title box
-            self.prepend(widget)
+            self._prefix_box.append(widget)
 
-        def set_child(self, widget):
-            # Simply append the widget - ActionRow with set_child replaces content
-            self.append(widget)
+        def add_suffix(self, widget):
+            self._suffix_box.append(widget)
+
+        def set_child(self, child):
+            if self._child:
+                self._suffix_box.remove(self._child)
+            self._child = child
+            if child:
+                self._suffix_box.append(child)
+
+        def set_activatable(self, activatable):
+            pass
+
+        def set_activatable_widget(self, widget):
+            pass
 
     class SwitchRow(Gtk.Box):
-        def __init__(self):
-            super().__init__(orientation=Gtk.Orientation.HORIZONTAL)
+        def __init__(self, **kwargs):
+            super().__init__(orientation=Gtk.Orientation.HORIZONTAL, **kwargs)
             self.set_spacing(12)
             self.set_margin_top(6)
             self.set_margin_bottom(6)
             self.set_margin_start(12)
             self.set_margin_end(12)
-            self._title_box = None
+            
+            self._title_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+            self._title_box.set_hexpand(True)
+            self.append(self._title_box)
+
             self._title_label = None
             self._subtitle_label = None
+
             self.switch = Gtk.Switch()
             self.switch.set_valign(Gtk.Align.CENTER)
             self.append(self.switch)
 
         def set_title(self, title):
-            if self._title_box is None:
-                self._title_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-                self._title_box.set_hexpand(True)
+            if self._title_label is None:
                 self._title_label = Gtk.Label(label=title)
                 self._title_label.set_halign(Gtk.Align.START)
                 self._title_box.append(self._title_label)
-                self.prepend(self._title_box)
             else:
                 self._title_label.set_text(title)
 
         def set_subtitle(self, subtitle):
-            if self._title_box is None:
-                self.set_title("")  # Initialize title box
             if self._subtitle_label is None:
                 self._subtitle_label = Gtk.Label(label=subtitle)
                 self._subtitle_label.set_halign(Gtk.Align.START)
@@ -191,26 +221,50 @@ class MockAdw:
         def set_active(self, active):
             self.switch.set_active(active)
 
+        def set_sensitive(self, sensitive):
+            self.switch.set_sensitive(sensitive)
+
         def connect(self, signal_name, callback):
             if signal_name == 'notify::active':
                 return self.switch.connect('notify::active', callback)
             return super().connect(signal_name, callback)
 
     class EntryRow(Gtk.Box):
-        def __init__(self):
-            super().__init__(orientation=Gtk.Orientation.VERTICAL)
-            self.set_spacing(6)
+        def __init__(self, **kwargs):
+            super().__init__(orientation=Gtk.Orientation.HORIZONTAL, **kwargs)
+            self.set_spacing(12)
             self.set_margin_top(6)
             self.set_margin_bottom(6)
             self.set_margin_start(12)
             self.set_margin_end(12)
+            
+            self._prefix_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+            self.append(self._prefix_box)
+
+            self._title_label = None
+            
             self.entry = Gtk.Entry()
+            self.entry.set_hexpand(True)
+            self.entry.set_valign(Gtk.Align.CENTER)
             self.append(self.entry)
 
+            self._suffix_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+            self.append(self._suffix_box)
+
         def set_title(self, title):
-            label = Gtk.Label(label=title)
-            label.set_halign(Gtk.Align.START)
-            self.prepend(label)
+            if self._title_label is None:
+                self._title_label = Gtk.Label(label=title)
+                self._title_label.set_halign(Gtk.Align.START)
+                self._title_label.set_valign(Gtk.Align.CENTER)
+                self.insert_child_after(self._title_label, self._prefix_box)
+            else:
+                self._title_label.set_text(title)
+
+        def add_prefix(self, widget):
+            self._prefix_box.append(widget)
+
+        def add_suffix(self, widget):
+            self._suffix_box.append(widget)
 
         def get_text(self):
             return self.entry.get_text()
@@ -220,20 +274,20 @@ class MockAdw:
 
         def connect(self, signal_name, callback):
             if signal_name in ('activate', 'entry-activated'):
-                # Forward to the internal entry widget's 'activate' signal
-                # (Adw.EntryRow uses 'entry-activated', Gtk.Entry uses 'activate')
                 return self.entry.connect('activate', callback)
+            elif signal_name in ('changed', 'notify::text'):
+                return self.entry.connect('changed', callback)
             else:
                 return super().connect(signal_name, callback)
 
     class PasswordEntryRow(EntryRow):
-        def __init__(self):
-            super().__init__()
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
             self.entry.set_visibility(False)
 
     class ExpanderRow(Gtk.Box):
-        def __init__(self):
-            super().__init__(orientation=Gtk.Orientation.VERTICAL)
+        def __init__(self, **kwargs):
+            super().__init__(orientation=Gtk.Orientation.VERTICAL, **kwargs)
             self.set_spacing(0)
 
             # Header box to hold title, prefix, and suffix
@@ -245,8 +299,7 @@ class MockAdw:
             self.header_box.set_margin_end(12)
 
             # Prefix box (left side)
-            self.prefix_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
-            self.prefix_box.set_spacing(6)
+            self.prefix_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
             self.header_box.append(self.prefix_box)
 
             # Title and subtitle box (center)
@@ -255,8 +308,7 @@ class MockAdw:
             self.header_box.append(self.title_box)
 
             # Suffix box (right side)
-            self.suffix_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
-            self.suffix_box.set_spacing(6)
+            self.suffix_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
             self.header_box.append(self.suffix_box)
 
             # Create expander with custom header
@@ -286,6 +338,9 @@ class MockAdw:
                 self.title_box.append(self._subtitle_label)
             self._subtitle_label.set_text(subtitle)
 
+        def get_subtitle(self):
+            return self._subtitle_label.get_text() if self._subtitle_label else ""
+
         def add_prefix(self, widget):
             self.prefix_box.append(widget)
 
@@ -307,43 +362,40 @@ class MockAdw:
         def get_enable_expansion(self):
             return self.expander.get_sensitive()
 
-        def get_subtitle(self):
-            return self._subtitle_label.get_text() if self._subtitle_label else ""
-
         def connect(self, signal_name, callback):
             if signal_name in ('notify::expanded', 'notify::enable-expansion'):
                 return self.expander.connect(signal_name, callback)
             return super().connect(signal_name, callback)
 
     class SpinRow(Gtk.Box):
-        def __init__(self):
-            super().__init__(orientation=Gtk.Orientation.HORIZONTAL)
+        def __init__(self, **kwargs):
+            super().__init__(orientation=Gtk.Orientation.HORIZONTAL, **kwargs)
             self.set_spacing(12)
             self.set_margin_top(6)
             self.set_margin_bottom(6)
             self.set_margin_start(12)
             self.set_margin_end(12)
-            self._title_box = None
+            
+            self._title_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+            self._title_box.set_hexpand(True)
+            self.append(self._title_box)
+
             self._title_label = None
             self._subtitle_label = None
+
             self.spin = Gtk.SpinButton()
             self.spin.set_valign(Gtk.Align.CENTER)
             self.append(self.spin)
 
         def set_title(self, title):
-            if self._title_box is None:
-                self._title_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-                self._title_box.set_hexpand(True)
+            if self._title_label is None:
                 self._title_label = Gtk.Label(label=title)
                 self._title_label.set_halign(Gtk.Align.START)
                 self._title_box.append(self._title_label)
-                self.prepend(self._title_box)
             else:
                 self._title_label.set_text(title)
 
         def set_subtitle(self, subtitle):
-            if self._title_box is None:
-                self.set_title("")  # Initialize title box
             if self._subtitle_label is None:
                 self._subtitle_label = Gtk.Label(label=subtitle)
                 self._subtitle_label.set_halign(Gtk.Align.START)
@@ -370,34 +422,34 @@ class MockAdw:
             return super().connect(signal_name, callback)
 
     class ComboRow(Gtk.Box):
-        def __init__(self):
-            super().__init__(orientation=Gtk.Orientation.HORIZONTAL)
+        def __init__(self, **kwargs):
+            super().__init__(orientation=Gtk.Orientation.HORIZONTAL, **kwargs)
             self.set_spacing(12)
             self.set_margin_top(6)
             self.set_margin_bottom(6)
             self.set_margin_start(12)
             self.set_margin_end(12)
-            self._title_box = None
+            
+            self._title_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+            self._title_box.set_hexpand(True)
+            self.append(self._title_box)
+
             self._title_label = None
             self._subtitle_label = None
-            self.combo = Gtk.ComboBoxText()
+
+            self.combo = Gtk.DropDown()
             self.combo.set_valign(Gtk.Align.CENTER)
-            super().append(self.combo)  # Use super().append() to avoid conflict
+            self.append(self.combo)
 
         def set_title(self, title):
-            if self._title_box is None:
-                self._title_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
-                self._title_box.set_hexpand(True)
+            if self._title_label is None:
                 self._title_label = Gtk.Label(label=title)
                 self._title_label.set_halign(Gtk.Align.START)
                 self._title_box.append(self._title_label)
-                self.prepend(self._title_box)
             else:
                 self._title_label.set_text(title)
 
         def set_subtitle(self, subtitle):
-            if self._title_box is None:
-                self.set_title("")  # Initialize title box
             if self._subtitle_label is None:
                 self._subtitle_label = Gtk.Label(label=subtitle)
                 self._subtitle_label.set_halign(Gtk.Align.START)
@@ -406,110 +458,78 @@ class MockAdw:
             else:
                 self._subtitle_label.set_text(subtitle)
 
-        def append(self, id, label):
-            # Forward to the combo widget
-            self.combo.append(id, label)
-
-        def get_active_id(self):
-            return self.combo.get_active_id()
-
-        def set_active_id(self, id):
-            self.combo.set_active_id(id)
-
         def set_model(self, model):
-            # Adw.ComboRow uses set_model with a StringList
-            # We'll convert it to ComboBoxText compatible format
-            # Clear existing items
-            while self.combo.get_active() >= 0 or self.combo.get_has_entry():
-                try:
-                    self.combo.remove(0)
-                except Exception:
-                    break
-
-            # Add new items
-            for i in range(model.get_n_items()):
-                item = model.get_string(i)
-                self.combo.append(str(i), item)
+            self.combo.set_model(model)
 
         def get_selected(self):
-            active = self.combo.get_active()
-            return active if active >= 0 else 0
+            return self.combo.get_selected()
 
         def set_selected(self, index):
-            if index >= 0:
-                self.combo.set_active(index)
+            self.combo.set_selected(index)
+
+        def connect(self, signal_name, callback):
+            if signal_name in ('notify::selected', 'notify::selected-item', 'changed'):
+                return self.combo.connect('notify::selected', callback)
+            return super().connect(signal_name, callback)
 
     class AlertDialog(Gtk.Dialog):
-        @staticmethod
-        def new(title, message):
-            dialog = AlertDialog()
-            dialog._title = title
-            dialog._message = message
-            dialog.set_title(title)
+        def __init__(self, heading="", body="", **kwargs):
+            super().__init__(**kwargs)
+            self.set_modal(True)
+            self._heading = heading
+            self._body = body
+            self._responses = {}
+            self._response_callbacks = {}
+            self._close_response = None
 
-            # Create content area with message
-            content = dialog.get_content_area()
-            label = Gtk.Label(label=message)
-            label.set_wrap(True)
-            label.set_margin_top(12)
-            label.set_margin_bottom(12)
-            label.set_margin_start(12)
-            label.set_margin_end(12)
-            content.append(label)
+            box = self.get_content_area() if hasattr(self, 'get_content_area') else self
+            if heading:
+                h_label = Gtk.Label(label=heading)
+                h_label.add_css_class("title-2")
+                h_label.set_margin_bottom(6)
+                box.append(h_label)
+            if body:
+                b_label = Gtk.Label(label=body)
+                b_label.set_wrap(True)
+                b_label.set_margin_bottom(12)
+                box.append(b_label)
 
-            return dialog
+        @classmethod
+        def new(cls, heading="", body=""):
+            return cls(heading=heading, body=body)
 
         def add_response(self, response_id, label):
+            self._responses[response_id] = label
             self.add_button(label, response_id)
 
         def set_response_appearance(self, response_id, appearance):
-            pass  # Not supported in Gtk-only mode
+            pass
 
         def set_close_response(self, response_id):
-            self.set_default_response(response_id)
+            self._close_response = response_id
 
-        def choose(self, parent, cancellable, callback, user_data=None):
-            # Adw.AlertDialog uses async choose(), but Gtk.Dialog uses run()
-            # We need to convert this to the callback pattern
-            self.set_transient_for(parent)
-            self.set_modal(True)
-
+        def choose(self, parent, cancellable, callback):
             def on_response(dialog, response):
-                callback(dialog, None)  # GAsyncResult is None for sync operations
-
+                dialog.destroy()
+                if callback:
+                    callback(dialog, response)
             self.connect('response', on_response)
-            self.present()
+            self.present(parent)
 
     class ResponseAppearance:
-        DESTRUCTIVE = None
+        DEFAULT = 0
+        SUGGESTED = 1
+        DESTRUCTIVE = 2
 
     class AboutWindow(Gtk.AboutDialog):
         def __init__(self, **kwargs):
-            super().__init__()
-            # Map Adw.AboutWindow parameters to Gtk.AboutDialog
-            if 'transient_for' in kwargs:
-                self.set_transient_for(kwargs['transient_for'])
-            if 'application_name' in kwargs:
-                self.set_program_name(kwargs['application_name'])
-            if 'application_icon' in kwargs:
-                self.set_logo_icon_name(kwargs['application_icon'])
-            if 'version' in kwargs:
-                self.set_version(kwargs['version'])
-            if 'developer_name' in kwargs:
-                self.set_authors([kwargs['developer_name']])
-            if 'copyright' in kwargs:
-                self.set_copyright(kwargs['copyright'])
-            if 'license_type' in kwargs:
-                self.set_license_type(kwargs['license_type'])
+            super().__init__(**kwargs)
 
         def set_website(self, url):
-            super().set_website(url)
+            self.set_website_url(url) if hasattr(self, 'set_website_url') else None
 
         def set_issue_url(self, url):
-            # Gtk.AboutDialog doesn't have set_issue_url, ignore it
             pass
-
-Adw = MockAdw()
 
 def detect_desktop_environment(manual_de=None):
     """Detect current Linux desktop environment or return manual override"""
@@ -525,7 +545,6 @@ def detect_desktop_environment(manual_de=None):
         }
         return de_map.get(manual_de.lower(), 'GENERIC')
 
-    # Detect Steam Deck / SteamOS Game Mode or Desktop Mode
     if os.path.exists('/etc/os-release'):
         try:
             with open('/etc/os-release', 'r') as f:
@@ -556,7 +575,6 @@ def get_de_custom_css(de):
     css_snippets = []
     if de == 'GNOME':
         css_snippets.append("""
-            /* GNOME Libadwaita Card & Pill Styling */
             .card, expanderrow {
                 border-radius: 12px;
             }
@@ -569,7 +587,6 @@ def get_de_custom_css(de):
         """)
     elif de == 'STEAM_OS':
         css_snippets.append("""
-            /* SteamOS Game Mode & Handheld Touch Optimization */
             .card, expanderrow {
                 border-radius: 8px;
                 border: 1px solid alpha(@borders, 0.4);
@@ -591,11 +608,9 @@ def get_de_custom_css(de):
             }
         """)
     else:
-        # Non-GNOME Traditional Desktop Window Styling (KDE, XFCE, Cinnamon, MATE, Generic)
         de_label = "KDE Breeze" if de == 'KDE' else f"{de} Traditional Desktop"
         border_rad = "4px" if de == 'KDE' else "2px"
         css_snippets.append(f"""
-            /* {de_label} - Traditional Window Styling (Non-GNOME Card Overrides) */
             .card {{
                 background-color: @window_bg_color;
                 box-shadow: none;
