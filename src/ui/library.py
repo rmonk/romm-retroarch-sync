@@ -1,8 +1,6 @@
 import os
 import sys
 import time
-import math
-import cairo
 import shutil
 import logging
 import threading
@@ -12,7 +10,6 @@ from datetime import datetime
 
 import urllib.request
 import urllib.parse
-from PIL import Image
 
 from gi.repository import Gtk, Gdk, GLib, Gio, GObject, Pango
 from ui.compat import Adw, HAS_ADW
