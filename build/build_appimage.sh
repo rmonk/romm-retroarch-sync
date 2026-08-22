@@ -57,7 +57,7 @@ find "$APPDIR" -name ".git*" -type f -delete 2>/dev/null || true
 
 # Copy application
 echo "📋 Copying application files..."
-cp "$PROJECT_ROOT"/src/*.py "$APPDIR/usr/bin/"
+cp -r "$PROJECT_ROOT"/src/* "$APPDIR/usr/bin/"
 
 # Vendor the shared sync engine. It lives in the Ludo repo now, so it is no
 # longer picked up by the src/*.py copy above. Prefer a local checkout (fast,
