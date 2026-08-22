@@ -3520,7 +3520,7 @@ class SyncWindow(Gtk.ApplicationWindow):
             GLib.idle_add(final_update)
 
             # Set timestamp for future incremental updates
-            sync_time = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+            sync_time = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
             self._last_full_fetch_time = sync_time
 
             # Save cache in background with original ungrouped count
@@ -3567,7 +3567,7 @@ class SyncWindow(Gtk.ApplicationWindow):
                 msg = f"✓ Library is up to date (0 changes, {total_elapsed:.2f}s)"
                 self.log_message(msg)
 
-                now_str = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+                now_str = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
                 self._last_full_fetch_time = now_str
 
                 def update_ui_up_to_date():
@@ -3608,7 +3608,7 @@ class SyncWindow(Gtk.ApplicationWindow):
             updated_games = list(existing_games_map.values())
             updated_games = self.library_section.sort_games_consistently(updated_games)
 
-            now_str = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+            now_str = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
             self._last_full_fetch_time = now_str
 
             def update_ui():
