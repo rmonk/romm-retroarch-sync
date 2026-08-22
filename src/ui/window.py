@@ -5,6 +5,7 @@ import socket
 import shutil
 import logging
 import datetime
+from datetime import datetime, timezone
 import threading
 from pathlib import Path
 
@@ -2479,30 +2480,33 @@ class SyncWindow(Gtk.ApplicationWindow):
                                     self.log_message(f"🔍 Cache original_total: {cache_original_total}")
                                     count_diff = abs(server_count - cache_original_total)
                                     self.log_message(f"🔍 Count difference: {count_diff}")
-                                    if count_diff > 0:
-                                        # Check auto-refresh setting before refreshing
-                                        auto_refresh_enabled = self.settings.get('RomM', 'auto_refresh') == 'true'
-                                        if auto_refresh_enabled:
-                                            def auto_refresh():
-                                                self.update_connection_ui_with_message(f"⟳ Cache outdated ({count_diff} games difference) - auto-refreshing...")
-                                                self.log_message(f"📊 Auto-refreshing: {count_diff} games difference detected")
-                                                self.refresh_games_list(force_full_refresh=True)
-                                                # Invalidate collections cache so collection view gets fresh data
-                                                if hasattr(self, 'library_section'):
-                                                    self.library_section.collections_cache_time = 0
-                                                    if self.library_section.current_view_mode == 'collection':
-                                                        self.library_section.load_collections_view()
-                                            GLib.idle_add(auto_refresh)
-                                        else:
+                                    # Check auto-refresh setting before refreshing
+                                    auto_refresh_enabled = self.settings.get('RomM', 'auto_refresh') == 'true'
+                                    if auto_refresh_enabled:
+                                        def auto_refresh():
+                                            if count_diff > 0:
+                                                self.update_connection_ui_with_message(f"⟳ Checking updates ({count_diff} count diff)...")
+                                                self.log_message(f"📊 Auto-refreshing: {count_diff} games difference detected (differential sync)")
+                                            else:
+                                                self.update_connection_ui_with_message(f"⟳ Checking for updates from server...")
+                                            self.refresh_games_list(force_full_refresh=False)
+                                            # Invalidate collections cache so collection view gets fresh data
+                                            if hasattr(self, 'library_section'):
+                                                self.library_section.collections_cache_time = 0
+                                                if self.library_section.current_view_mode == 'collection':
+                                                    self.library_section.load_collections_view()
+                                        GLib.idle_add(auto_refresh)
+                                    else:
+                                        if count_diff > 0:
                                             def show_outdated():
                                                 self.update_connection_ui_with_message(f"🟡 Connected - {cached_count:,} games cached • ⚠️ {count_diff} games difference detected - Consider refreshing the library")
                                                 self.log_message(f"📊 Server has {count_diff} different games - consider refreshing")
                                             GLib.idle_add(show_outdated)
-                                    else:
-                                        def update_status():
-                                            self.update_connection_ui_with_message(f"🟢 Connected - {cached_count:,} games cached")
-                                            self.log_message(f"📊 Cache is up to date with server")
-                                        GLib.idle_add(update_status)
+                                        else:
+                                            def update_status():
+                                                self.update_connection_ui_with_message(f"🟢 Connected - {cached_count:,} games cached")
+                                                self.log_message(f"📊 Cache is up to date with server")
+                                            GLib.idle_add(update_status)
                                 else:
                                     # Server check failed, show cache info
                                     def update_status():
@@ -3516,7 +3520,7 @@ class SyncWindow(Gtk.ApplicationWindow):
             GLib.idle_add(final_update)
 
             # Set timestamp for future incremental updates
-            sync_time = datetime.datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+            sync_time = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
             self._last_full_fetch_time = sync_time
 
             # Save cache in background with original ungrouped count
@@ -3563,7 +3567,7 @@ class SyncWindow(Gtk.ApplicationWindow):
                 msg = f"✓ Library is up to date (0 changes, {total_elapsed:.2f}s)"
                 self.log_message(msg)
 
-                now_str = datetime.datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+                now_str = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
                 self._last_full_fetch_time = now_str
 
                 def update_ui_up_to_date():
@@ -3573,8 +3577,13 @@ class SyncWindow(Gtk.ApplicationWindow):
 
                 GLib.idle_add(update_ui_up_to_date)
                 if hasattr(self, 'game_cache') and self.available_games and len(self.available_games) > 0 and server_games_count > 0:
-                    threading.Thread(target=lambda: self.game_cache.save_games_data(self.available_games, last_sync_datetime=now_str), daemon=True).start()
+                    orig_total = getattr(self.game_cache, 'original_total', None)
+                    threading.Thread(target=lambda: self.game_cache.save_games_data(self.available_games, original_total=orig_total, last_sync_datetime=now_str), daemon=True).start()
                 return
+
+            # Group sibling ROMs in new_roms if supported
+            if hasattr(self.romm_client, '_group_sibling_roms'):
+                new_roms = self.romm_client._group_sibling_roms(new_roms)
 
             # Process new/updated ROMs
             new_count = 0
@@ -3599,7 +3608,7 @@ class SyncWindow(Gtk.ApplicationWindow):
             updated_games = list(existing_games_map.values())
             updated_games = self.library_section.sort_games_consistently(updated_games)
 
-            now_str = datetime.datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+            now_str = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
             self._last_full_fetch_time = now_str
 
             def update_ui():
@@ -3616,8 +3625,11 @@ class SyncWindow(Gtk.ApplicationWindow):
 
             GLib.idle_add(update_ui)
 
-            # Save updated cache in background
-            threading.Thread(target=lambda: self.game_cache.save_games_data(updated_games, last_sync_datetime=now_str), daemon=True).start()
+            # Save updated cache in background with updated original_total
+            orig_total = getattr(self.game_cache, 'original_total', len(self.available_games))
+            if orig_total is not None and new_count > 0:
+                orig_total += new_count
+            threading.Thread(target=lambda: self.game_cache.save_games_data(updated_games, original_total=orig_total, last_sync_datetime=now_str), daemon=True).start()
 
         except Exception as e:
             self.log_message(f"Incremental sync error: {e}")
@@ -4188,7 +4200,9 @@ class SyncWindow(Gtk.ApplicationWindow):
 
                         # Save cache to persist deletion status
                         if hasattr(self, 'game_cache'):
-                            threading.Thread(target=lambda: self.game_cache.save_games_data(self.available_games), daemon=True).start()
+                            orig_total = getattr(self.game_cache, 'original_total', None)
+                            last_sync = getattr(self.game_cache, 'last_sync_datetime', self._last_full_fetch_time)
+                            threading.Thread(target=lambda: self.game_cache.save_games_data(self.available_games, original_total=orig_total, last_sync_datetime=last_sync), daemon=True).start()
 
                         # Update UI - rebuild_children will check file existence for each variant
                         def update_ui():
