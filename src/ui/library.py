@@ -16,7 +16,7 @@ from PIL import Image
 from gi.repository import Gtk, Gdk, GLib, Gio, GObject, Pango
 from ui.compat import Adw, HAS_ADW
 from ui.models import GameItem, DiscItem, PlatformItem, LibraryTreeModel
-from romm_sync_engine.sync_core import *
+from romm_sync_engine.sync_core import cache_dir, RomMClient, PerformanceTimer
 
 class EnhancedLibrarySection:
     """Enhanced library section with tree view"""

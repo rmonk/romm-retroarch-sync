@@ -16,7 +16,11 @@ from gi.repository import Gtk, Gdk, GLib, Gio, GObject, Pango
 from ui.compat import Adw, HAS_ADW, detect_desktop_environment, get_de_custom_css
 from ui.models import GameItem, DiscItem, PlatformItem, LibraryTreeModel
 from ui.library import EnhancedLibrarySection
-from romm_sync_engine.sync_core import *
+from romm_sync_engine.sync_core import (
+    RomMClient, GameDataCache, AutoSyncManager,
+    SettingsManager, RetroArchInterface, SteamShortcutManager,
+    CoverArtManager, cache_dir
+)
 
 class SettingsBackedEntry:
     """Simple helper that acts like an EntryRow but reads from settings"""
