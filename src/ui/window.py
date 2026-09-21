@@ -1158,7 +1158,7 @@ class SyncWindow(Gtk.ApplicationWindow):
             transient_for=self,
             application_name="RomM - RetroArch Sync",
             application_icon="com.romm.retroarch.sync",
-            version="1.7",
+            version="1.7.1",
             developer_name='Hector Eduardo "Covin" Silveri',
             copyright="© 2025-2026 Hector Eduardo Silveri",
             license_type=Gtk.License.GPL_3_0
@@ -2221,7 +2221,7 @@ class SyncWindow(Gtk.ApplicationWindow):
             device_name = self.settings.get('Device', 'device_name', socket.gethostname())
             platform = self.settings.get('Device', 'device_platform', 'Linux')
             client = self.settings.get('Device', 'client', 'RomM-RetroArch-Sync')
-            client_version = self.settings.get('Device', 'client_version', '1.7')
+            client_version = self.settings.get('Device', 'client_version', '1.7.1')
 
             device_id = self.romm_client.register_device(
                 device_name=device_name,
@@ -3283,7 +3283,7 @@ class SyncWindow(Gtk.ApplicationWindow):
             GLib.idle_add(final_update)
 
             # Set timestamp for future incremental updates
-            sync_time = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+            sync_time = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
             self._last_full_fetch_time = sync_time
 
             # Save cache in background with original ungrouped count
@@ -3330,7 +3330,7 @@ class SyncWindow(Gtk.ApplicationWindow):
                 msg = f"✓ Library is up to date (0 changes, {total_elapsed:.2f}s)"
                 self.log_message(msg)
 
-                now_str = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+                now_str = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
                 self._last_full_fetch_time = now_str
 
                 def update_ui_up_to_date():
@@ -3371,7 +3371,7 @@ class SyncWindow(Gtk.ApplicationWindow):
             updated_games = list(existing_games_map.values())
             updated_games = self.library_section.sort_games_consistently(updated_games)
 
-            now_str = datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+            now_str = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
             self._last_full_fetch_time = now_str
 
             def update_ui():
@@ -4362,6 +4362,11 @@ class SyncWindow(Gtk.ApplicationWindow):
 
                 parent_details = parent_response.json()
                 parent_files = parent_details.get('files', [])
+                # True "folder" ROM (multi=true, several physical files under one
+                # rom_id) vs. a standalone single-file ROM that merely has its own
+                # filename trivially "matching" itself in its own files array.
+                # Only the former is downloadable via parent_rom_id + file_ids.
+                is_folder_rom = bool(parent_details.get('multi')) or len(parent_files) > 1
 
                 # Use file_name (actual folder name on disk) matching process_single_rom() logic
                 parent_folder_name = parent_game.get('file_name') or parent_game.get('name', 'unknown')
@@ -4374,25 +4379,37 @@ class SyncWindow(Gtk.ApplicationWindow):
                     rom_name = variant.get('name', 'Unknown')
                     full_fs_name = variant.get('full_fs_name', rom_name)
 
-                    # Find the matching file in parent's files array
+                    # Only look for a matching files[] entry when the parent is a
+                    # true folder ROM — a standalone single-file ROM's own file
+                    # would trivially "match itself" here, but it isn't
+                    # downloadable via file_ids (see is_folder_rom above).
                     matching_file = None
-                    for file_obj in parent_files:
-                        # Match by filename only (rom_id in files array is parent's ID)
-                        file_name = file_obj.get('filename') or file_obj.get('file_name', '')
-                        if file_name == full_fs_name:
-                            matching_file = file_obj
-                            break
+                    if is_folder_rom:
+                        for file_obj in parent_files:
+                            # Match by filename only (rom_id in files array is parent's ID)
+                            file_name = file_obj.get('filename') or file_obj.get('file_name', '')
+                            if file_name == full_fs_name:
+                                matching_file = file_obj
+                                break
 
-                    if not matching_file:
-                        self.log_message(f"  ⚠️ Could not find file ID for {rom_name}, skipping")
+                    if matching_file:
+                        file_id = matching_file.get('id')
+                        if not file_id:
+                            self.log_message(f"  ⚠️ No file ID found for {rom_name}, skipping")
+                            continue
+                        download_rom_id = parent_rom_id
+                        download_file_ids = str(file_id)
+                        download_target = local_folder
+                        self.log_message(f"  Downloading {rom_name} (file ID: {file_id})...")
+                    elif child_rom_id:
+                        download_rom_id = child_rom_id
+                        download_file_ids = None
+                        download_target = local_folder / full_fs_name
+                        self.log_message(f"  Downloading {rom_name} (standalone ROM ID: {child_rom_id})...")
+                    else:
+                        self.log_message(f"  ⚠️ Could not find file ID or ROM ID for {rom_name}, skipping")
                         continue
 
-                    file_id = matching_file.get('id')
-                    if not file_id:
-                        self.log_message(f"  ⚠️ No file ID found for {rom_name}, skipping")
-                        continue
-
-                    self.log_message(f"  Downloading {rom_name} (file ID: {file_id})...")
                     self.log_message(f"  Target path: {local_folder / full_fs_name}")
 
                     # Initialize progress tracking for child only
@@ -4419,18 +4436,19 @@ class SyncWindow(Gtk.ApplicationWindow):
 
                     self.log_message(f"  🔄 Starting download_rom call...")
 
-                    # Download using parent ROM ID + specific file ID
+                    # Download using parent ROM ID + file ID (folder-member variant)
+                    # or the variant's own ROM ID (standalone sibling ROM).
                     # Progress callback updates child only
                     def update_child_progress(progress):
                         if child_rom_id:
                             self.update_download_progress(progress, child_rom_id)
 
                     success, message = self.romm_client.download_rom(
-                        parent_rom_id,  # Use parent ROM ID
+                        download_rom_id,
                         full_fs_name,  # Use full filename with extension
-                        local_folder,
+                        download_target,
                         progress_callback=update_child_progress,
-                        file_ids=str(file_id)  # Specify which file to download
+                        file_ids=download_file_ids  # Only set for folder-member variants
                     )
 
                     self.log_message(f"  ✅ download_rom returned!")

@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.7.1] - 2026-09-21
+
+### Fixed
+- Fixed a `datetime` import shadowing bug in `src/ui/window.py` that caused full and incremental sync to silently fail with "Full sync error: type object 'datetime.datetime' has no attribute 'datetime'".
+
 ## [1.7] - 2026-08-21
 
 ### Added

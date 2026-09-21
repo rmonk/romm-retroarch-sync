@@ -61,6 +61,30 @@ class GameItem(GObject.Object):
             parent_local_path = self.game_data.get('local_path')
             parent_is_downloaded = self.game_data.get('is_downloaded', False)
 
+            def _variant_is_downloaded(full_fs_name):
+                if parent_is_downloaded and parent_local_path:
+                    from pathlib import Path
+                    parent_path = Path(parent_local_path)
+                    if parent_path.is_dir():
+                        return (parent_path / full_fs_name).exists()
+                return False
+
+            # The "main" ROM (this entry's own data) is one of the grouped
+            # variants too — show it as a child alongside its siblings so the
+            # user can tell them apart and download either one individually,
+            # instead of only seeing the siblings nested under an unlabeled
+            # main entry.
+            main_full_fs_name = self.game_data.get('file_name') or self.game_data.get('name', 'Unknown')
+            main_data = {
+                'name': self.game_data.get('name', 'Unknown'),
+                'full_fs_name': main_full_fs_name,
+                'rom_id': self.game_data.get('rom_id'),
+                'is_downloaded': _variant_is_downloaded(main_full_fs_name),
+                'size': self.game_data.get('romm_data', {}).get('fs_size_bytes', 0) or self.game_data.get('local_size', 0),
+                'is_regional_variant': True
+            }
+            new_items.append(DiscItem(main_data, parent_game=self.game_data))
+
             for sibling in siblings:
                 fs_name = sibling.get('fs_name', '')
                 fs_extension = sibling.get('fs_extension', '')
@@ -80,19 +104,11 @@ class GameItem(GObject.Object):
                     from pathlib import Path
                     variant_name = Path(variant_name).stem
 
-                variant_is_downloaded = False
-                if parent_is_downloaded and parent_local_path:
-                    from pathlib import Path
-                    parent_path = Path(parent_local_path)
-                    if parent_path.is_dir():
-                        variant_file_path = parent_path / full_fs_name
-                        variant_is_downloaded = variant_file_path.exists()
-
                 sibling_data = {
                     'name': variant_name,
                     'full_fs_name': full_fs_name,
                     'rom_id': sibling.get('id'),
-                    'is_downloaded': variant_is_downloaded,
+                    'is_downloaded': _variant_is_downloaded(full_fs_name),
                     'size': sibling.get('fs_size_bytes', 0),
                     'is_regional_variant': True
                 }
