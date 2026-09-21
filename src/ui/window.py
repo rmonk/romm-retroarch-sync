@@ -4362,6 +4362,11 @@ class SyncWindow(Gtk.ApplicationWindow):
 
                 parent_details = parent_response.json()
                 parent_files = parent_details.get('files', [])
+                # True "folder" ROM (multi=true, several physical files under one
+                # rom_id) vs. a standalone single-file ROM that merely has its own
+                # filename trivially "matching" itself in its own files array.
+                # Only the former is downloadable via parent_rom_id + file_ids.
+                is_folder_rom = bool(parent_details.get('multi')) or len(parent_files) > 1
 
                 # Use file_name (actual folder name on disk) matching process_single_rom() logic
                 parent_folder_name = parent_game.get('file_name') or parent_game.get('name', 'unknown')
@@ -4374,21 +4379,18 @@ class SyncWindow(Gtk.ApplicationWindow):
                     rom_name = variant.get('name', 'Unknown')
                     full_fs_name = variant.get('full_fs_name', rom_name)
 
-                    # Find the matching file in parent's files array. This only
-                    # exists when the variant is a file-member of one physical
-                    # "folder" ROM (multi=true) — downloadable via the parent's
-                    # rom_id + file_ids. Independent standalone sibling ROMs
-                    # (e.g. two separately-cataloged translations that RomM
-                    # merely links via sibling_roms) have their own rom_id and
-                    # never appear in the parent's own files array; those must
-                    # be fetched directly by their own child_rom_id instead.
+                    # Only look for a matching files[] entry when the parent is a
+                    # true folder ROM — a standalone single-file ROM's own file
+                    # would trivially "match itself" here, but it isn't
+                    # downloadable via file_ids (see is_folder_rom above).
                     matching_file = None
-                    for file_obj in parent_files:
-                        # Match by filename only (rom_id in files array is parent's ID)
-                        file_name = file_obj.get('filename') or file_obj.get('file_name', '')
-                        if file_name == full_fs_name:
-                            matching_file = file_obj
-                            break
+                    if is_folder_rom:
+                        for file_obj in parent_files:
+                            # Match by filename only (rom_id in files array is parent's ID)
+                            file_name = file_obj.get('filename') or file_obj.get('file_name', '')
+                            if file_name == full_fs_name:
+                                matching_file = file_obj
+                                break
 
                     if matching_file:
                         file_id = matching_file.get('id')
