@@ -4374,7 +4374,14 @@ class SyncWindow(Gtk.ApplicationWindow):
                     rom_name = variant.get('name', 'Unknown')
                     full_fs_name = variant.get('full_fs_name', rom_name)
 
-                    # Find the matching file in parent's files array
+                    # Find the matching file in parent's files array. This only
+                    # exists when the variant is a file-member of one physical
+                    # "folder" ROM (multi=true) — downloadable via the parent's
+                    # rom_id + file_ids. Independent standalone sibling ROMs
+                    # (e.g. two separately-cataloged translations that RomM
+                    # merely links via sibling_roms) have their own rom_id and
+                    # never appear in the parent's own files array; those must
+                    # be fetched directly by their own child_rom_id instead.
                     matching_file = None
                     for file_obj in parent_files:
                         # Match by filename only (rom_id in files array is parent's ID)
@@ -4383,16 +4390,24 @@ class SyncWindow(Gtk.ApplicationWindow):
                             matching_file = file_obj
                             break
 
-                    if not matching_file:
-                        self.log_message(f"  ⚠️ Could not find file ID for {rom_name}, skipping")
+                    if matching_file:
+                        file_id = matching_file.get('id')
+                        if not file_id:
+                            self.log_message(f"  ⚠️ No file ID found for {rom_name}, skipping")
+                            continue
+                        download_rom_id = parent_rom_id
+                        download_file_ids = str(file_id)
+                        download_target = local_folder
+                        self.log_message(f"  Downloading {rom_name} (file ID: {file_id})...")
+                    elif child_rom_id:
+                        download_rom_id = child_rom_id
+                        download_file_ids = None
+                        download_target = local_folder / full_fs_name
+                        self.log_message(f"  Downloading {rom_name} (standalone ROM ID: {child_rom_id})...")
+                    else:
+                        self.log_message(f"  ⚠️ Could not find file ID or ROM ID for {rom_name}, skipping")
                         continue
 
-                    file_id = matching_file.get('id')
-                    if not file_id:
-                        self.log_message(f"  ⚠️ No file ID found for {rom_name}, skipping")
-                        continue
-
-                    self.log_message(f"  Downloading {rom_name} (file ID: {file_id})...")
                     self.log_message(f"  Target path: {local_folder / full_fs_name}")
 
                     # Initialize progress tracking for child only
@@ -4419,18 +4434,19 @@ class SyncWindow(Gtk.ApplicationWindow):
 
                     self.log_message(f"  🔄 Starting download_rom call...")
 
-                    # Download using parent ROM ID + specific file ID
+                    # Download using parent ROM ID + file ID (folder-member variant)
+                    # or the variant's own ROM ID (standalone sibling ROM).
                     # Progress callback updates child only
                     def update_child_progress(progress):
                         if child_rom_id:
                             self.update_download_progress(progress, child_rom_id)
 
                     success, message = self.romm_client.download_rom(
-                        parent_rom_id,  # Use parent ROM ID
+                        download_rom_id,
                         full_fs_name,  # Use full filename with extension
-                        local_folder,
+                        download_target,
                         progress_callback=update_child_progress,
-                        file_ids=str(file_id)  # Specify which file to download
+                        file_ids=download_file_ids  # Only set for folder-member variants
                     )
 
                     self.log_message(f"  ✅ download_rom returned!")
