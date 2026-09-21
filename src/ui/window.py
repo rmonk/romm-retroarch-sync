@@ -1158,7 +1158,7 @@ class SyncWindow(Gtk.ApplicationWindow):
             transient_for=self,
             application_name="RomM - RetroArch Sync",
             application_icon="com.romm.retroarch.sync",
-            version="1.7",
+            version="1.7.1",
             developer_name='Hector Eduardo "Covin" Silveri',
             copyright="© 2025-2026 Hector Eduardo Silveri",
             license_type=Gtk.License.GPL_3_0
@@ -2221,7 +2221,7 @@ class SyncWindow(Gtk.ApplicationWindow):
             device_name = self.settings.get('Device', 'device_name', socket.gethostname())
             platform = self.settings.get('Device', 'device_platform', 'Linux')
             client = self.settings.get('Device', 'client', 'RomM-RetroArch-Sync')
-            client_version = self.settings.get('Device', 'client_version', '1.7')
+            client_version = self.settings.get('Device', 'client_version', '1.7.1')
 
             device_id = self.romm_client.register_device(
                 device_name=device_name,

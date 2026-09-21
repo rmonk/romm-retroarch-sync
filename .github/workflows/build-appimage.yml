@@ -16,7 +16,7 @@ on:
         type: boolean
         default: true
       tag_name:
-        description: 'Custom tag name for manual release (leave empty for auto-generated v1.7-yyyy-mm-dd-build_number)'
+        description: 'Custom tag name for manual release (leave empty for auto-generated v1.7.1-yyyy-mm-dd-build_number)'
         required: false
         type: string
 

@@ -9,7 +9,7 @@ PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
 echo "📁 Project root: $PROJECT_ROOT"
 
-VERSION="${VERSION:-1.7}"
+VERSION="${VERSION:-1.7.1}"
 APPIMAGE_NAME="RomM-RetroArch-Sync-v${VERSION}.AppImage"
 
 # Define paths
@@ -262,9 +262,9 @@ cat > "$APPDIR/usr/share/metainfo/com.romm.retroarch.sync.appdata.xml" << EOF
   </categories>
   
   <releases>
-    <release version="${VERSION}" date="2026-06-23">
+    <release version="${VERSION}" date="2026-09-21">
       <description>
-        <p>Version 1.7 update with full resync button and window management fixes.</p>
+        <p>Version 1.7.1 fixes a datetime import bug that caused full and incremental sync to silently fail.</p>
       </description>
     </release>
   </releases>
